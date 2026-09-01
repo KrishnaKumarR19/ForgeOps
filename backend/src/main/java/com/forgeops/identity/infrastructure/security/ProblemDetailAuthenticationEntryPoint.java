@@ -25,7 +25,7 @@ import org.springframework.stereotype.Component;
  * values (SECURITY_DESIGN.md §17, §11 — this is a 401 concern, not 403).
  */
 @Component
-class ProblemDetailAuthenticationEntryPoint implements AuthenticationEntryPoint {
+public class ProblemDetailAuthenticationEntryPoint implements AuthenticationEntryPoint {
 
     private final ObjectMapper objectMapper;
 

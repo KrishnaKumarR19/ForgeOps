@@ -138,6 +138,37 @@ role-based access.
   Security Crypto `Argon2PasswordEncoder` + Bouncy Castle) behind the existing
   `PasswordHash` boundary, with the SECURITY_DESIGN §5 baseline parameters (ADR-0031).
   6 focused unit tests; verified locally.
+- **Phase 4.2 — Slice 5: role-based authorization + 401/403 boundary (In progress):**
+  the authorization foundation on top of Slice 4 authentication — **authorization only**
+  (SECURITY_DESIGN §14/§15, API_CONTRACTS §4). Roles are mapped to Spring authorities in
+  `AuthenticatedUserAuthentication` as `ROLE_<name>` (single canonical prefix, added exactly
+  once, so `hasRole("ADMIN")` matches with no `ROLE_ROLE_` duplication); the roles come
+  solely from the Slice-4 validated-token-derived principal — never from request headers,
+  body, or query. Authorization is expressed as URL-level request-matcher rules on the
+  existing single stateless `SecurityConfig` chain (no method-level annotations, no second
+  chain): `POST /api/v1/auth/login` and `/actuator/health` public, `POST /api/v1/auth/register`
+  **requires ADMIN**, and everything else (incl. `GET /api/v1/auth/me`) requires
+  authentication. Implemented the contract-defined ADMIN-gated `POST /api/v1/auth/register`
+  (ADR-0033) backed by the existing Slice-2 `UserProvisioningService` — `RegisterRequest`
+  (username/password/roles) / `RegisterResponse` (id/username/roles/status, **no secret**),
+  `201` on success, `409` on duplicate username, `400` on invalid role/validation. Added
+  `ProblemDetailAccessDeniedHandler` producing RFC 9457 `403` `application/problem+json` with
+  the correlation id, kept distinct from the `401`
+  `ProblemDetailAuthenticationEntryPoint`; both preserve the correlation id and leak no
+  token/secret/config/stack-trace. Slice-4 authentication (RS256 validation, disabled-user
+  rejection, PostgreSQL-authoritative account status) is unchanged. No new roles, no
+  permission tables, no policy engine, no new dependencies. Non-container suite passes
+  **80/80** locally, incl. architecture + module-boundary tests (16 new: authority mapping
+  per role + multi-role + no-double-prefix; MockMvc authorization over the real filter chain
+  — 401 vs 403, ADMIN-only register, invalid-token→401-not-403, client cannot elevate via
+  header/body/query). Testcontainers authorization integration test
+  (`AuthorizationIntegrationTests`: login public; `/me` any-authenticated 200; ADMIN
+  register 201 with no secret echoed; ENGINEER/VIEWER register→403 problem+json; missing
+  token→401; invalid/expired→401; role-claim tampering→401 not elevation; deactivated→401)
+  is written but **blocked locally by the Docker Engine 29 limitation** (`/info` returns
+  HTTP 400 to docker-java); Testcontainers did not execute locally. **Authoritative
+  verification pending CI — YELLOW.** No new business/domain endpoints (events/incidents/
+  analytics/SSE/AI), no refresh tokens, no OAuth/OIDC, no password reset, no MFA, no Redis.
 - **Phase 4.2 — Slice 4: JWT validation + authenticated principal (In progress):**
   the authentication foundation for accepting a previously issued RS256 access token on
   protected requests — **authentication only, no authorization** (SECURITY_DESIGN §7/§11/§12).

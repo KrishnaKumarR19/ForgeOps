@@ -20,26 +20,34 @@ import org.springframework.security.web.authentication.UsernamePasswordAuthentic
  *   <li>CSRF is disabled — there are no cookies/sessions to protect and clients
  *       authenticate with a Bearer token per request;</li>
  *   <li>form login, HTTP Basic and OAuth2/OIDC are all disabled;</li>
- *   <li>{@code POST /api/v1/auth/login} and the health endpoint are public; everything else
- *       requires authentication;</li>
+ *   <li>{@code POST /api/v1/auth/login} and the health endpoint are public; {@code POST
+ *       /api/v1/auth/register} requires the {@code ADMIN} role (ADR-0033); everything else
+ *       (including {@code GET /api/v1/auth/me}) requires authentication;</li>
  *   <li>the {@link JwtAuthenticationFilter} runs before the username/password filter and
- *       populates the security context from a valid token;</li>
- *   <li>authentication failures are rendered as RFC 9457 Problem Details by
- *       {@link ProblemDetailAuthenticationEntryPoint}.</li>
+ *       populates the security context (with {@code ROLE_*} authorities) from a valid
+ *       token;</li>
+ *   <li>authentication failures are rendered as RFC 9457 Problem Details ({@code 401}) by
+ *       {@link ProblemDetailAuthenticationEntryPoint}, and authorization failures
+ *       ({@code 403}) by {@link ProblemDetailAccessDeniedHandler} — the two are kept
+ *       distinct (SECURITY_DESIGN.md §15).</li>
  * </ul>
  *
- * <p>No role-based authorization rules are configured here — {@code 403} authorization is
- * the next slice (SECURITY_DESIGN.md §11). The correlation-id filter is registered at
- * highest precedence as its own servlet filter, so it already runs before this chain and
- * 401 responses retain their correlation id.
+ * <p>Authorization is expressed as URL-level request-matcher rules on this single filter
+ * chain (no method-level annotations, no second chain), consistent with the Slice 4 setup.
+ * Roles map to {@code ROLE_<name>} authorities exactly once (see
+ * {@link AuthenticatedUserAuthentication}), so {@code hasRole("ADMIN")} matches without a
+ * doubled prefix. The correlation-id filter is registered at highest precedence as its own
+ * servlet filter, so it already runs before this chain and both 401 and 403 responses retain
+ * their correlation id.
  */
 @Configuration
-class SecurityConfig {
+public class SecurityConfig {
 
     @Bean
     SecurityFilterChain securityFilterChain(HttpSecurity http,
                                             JwtAuthenticationFilter jwtAuthenticationFilter,
-                                            ProblemDetailAuthenticationEntryPoint entryPoint)
+                                            ProblemDetailAuthenticationEntryPoint entryPoint,
+                                            ProblemDetailAccessDeniedHandler accessDeniedHandler)
             throws Exception {
         http
                 .csrf(AbstractHttpConfigurer::disable)
@@ -52,8 +60,11 @@ class SecurityConfig {
                 .authorizeHttpRequests(auth -> auth
                         .requestMatchers(HttpMethod.POST, "/api/v1/auth/login").permitAll()
                         .requestMatchers("/actuator/health", "/actuator/health/**").permitAll()
+                        .requestMatchers(HttpMethod.POST, "/api/v1/auth/register").hasRole("ADMIN")
                         .anyRequest().authenticated())
-                .exceptionHandling(ex -> ex.authenticationEntryPoint(entryPoint))
+                .exceptionHandling(ex -> ex
+                        .authenticationEntryPoint(entryPoint)
+                        .accessDeniedHandler(accessDeniedHandler))
                 .addFilterBefore(jwtAuthenticationFilter, UsernamePasswordAuthenticationFilter.class);
         return http.build();
     }
