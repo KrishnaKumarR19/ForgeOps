@@ -7,16 +7,21 @@ import com.forgeops.identity.domain.Role;
 import com.forgeops.testsupport.PostgresTestContainer;
 import com.nimbusds.jwt.SignedJWT;
 import java.util.EnumSet;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
+import org.springframework.jdbc.core.JdbcTemplate;
 
 /**
  * Integration tests for login against real PostgreSQL (Testcontainers). Provisions a user
  * through the real provisioning path (Argon2id hash persisted), then logs in and inspects
  * the issued RS256 token. Uses the test-only JWT keys from {@code src/test/resources}.
  * Bootstrap is disabled so the tests control user creation.
+ *
+ * <p>The identity tables are cleaned before each test so the shared, non-rolled-back
+ * {@code @SpringBootTest} database stays order-independent across integration classes.
  */
 @SpringBootTest(properties = "forgeops.security.bootstrap-admin.enabled=false")
 @Import(PostgresTestContainer.class)
@@ -29,6 +34,14 @@ class LoginIntegrationTests {
 
     @Autowired
     private LoginService login;
+
+    @Autowired
+    private JdbcTemplate jdbcTemplate;
+
+    @BeforeEach
+    void cleanIdentityTables() {
+        jdbcTemplate.execute("TRUNCATE TABLE users CASCADE");
+    }
 
     @Test
     void persistedUserCanLogInAndTokenReflectsPersistedRoles() throws Exception {

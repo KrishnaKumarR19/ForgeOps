@@ -151,6 +151,14 @@ role-based access.
   written; blocked locally by Docker Engine 29; **authoritative verification pending CI.**
   No JWT validation filter, principal extraction, authorization, 401/403 chain, or refresh
   tokens.
+  **CI fix (test isolation):** the first CI run failed with
+  `UserProvisioningIntegrationTests.provisionsAndRetrievesUser » UsernameAlreadyExists
+  'alice'` — a shared-database isolation defect, not a production bug. The `@SpringBootTest`
+  integration classes share one PostgreSQL container and do not roll back, so `alice`
+  created by `LoginIntegrationTests` leaked into `UserProvisioningIntegrationTests` under a
+  different CI execution order. Fixed by truncating the identity tables before each test in
+  the three `@SpringBootTest` integration classes (test-only; production uniqueness /
+  constraint / provisioning semantics unchanged). Re-verification **pending CI**.
 - **Phase 4.2 — Slice 2: admin provisioning + bootstrap admin (In progress):**
   application-layer `UserProvisioningService` (server-generated UUID v7 id, Argon2id hash,
   role assignment, ACTIVE status, `@Transactional`, DB-authoritative username uniqueness)

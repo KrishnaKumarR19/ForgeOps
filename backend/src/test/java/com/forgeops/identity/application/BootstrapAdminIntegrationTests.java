@@ -6,19 +6,23 @@ import com.forgeops.identity.domain.Role;
 import com.forgeops.identity.domain.User;
 import com.forgeops.identity.domain.UserRepository;
 import com.forgeops.testsupport.PostgresTestContainer;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.ApplicationArguments;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
+import org.springframework.jdbc.core.JdbcTemplate;
 
 /**
  * Integration tests for the bootstrap administrator against real PostgreSQL
  * (Testcontainers). The bootstrap credentials here are synthetic test values supplied via
  * test properties — not real credentials, and not committed anywhere sensitive.
  *
- * <p>The application's {@code BootstrapAdminInitializer} runs once on startup; these tests
- * then re-invoke it to prove idempotency (no duplicate user/roles, no password change).
+ * <p>Each test starts from a clean identity table (the shared {@code @SpringBootTest}
+ * database is not rolled back), then drives {@code BootstrapAdminInitializer} directly to
+ * verify first-run creation and idempotency deterministically, independent of what startup
+ * did or of test execution order.
  */
 @SpringBootTest(properties = {
         "forgeops.security.bootstrap-admin.enabled=true",
@@ -36,11 +40,20 @@ class BootstrapAdminIntegrationTests {
     @Autowired
     private BootstrapAdminInitializer initializer;
 
+    @Autowired
+    private JdbcTemplate jdbcTemplate;
+
+    @BeforeEach
+    void cleanIdentityTables() {
+        jdbcTemplate.execute("TRUNCATE TABLE users CASCADE");
+    }
+
     @Test
     void bootstrapCreatesExactlyOneAdminAndIsIdempotent() {
-        // Startup already ran the initializer once; the admin should exist as an ADMIN.
-        assertThat(users.findByUsername(BOOTSTRAP_USERNAME)).isPresent();
+        // First run against an empty database: the bootstrap admin is created as an ADMIN.
+        initializer.run(noArgs());
 
+        assertThat(users.findByUsername(BOOTSTRAP_USERNAME)).isPresent();
         User first = users.findByUsername(BOOTSTRAP_USERNAME).orElseThrow();
         String hashAfterFirstRun = first.passwordHash().encodedValue();
         assertThat(first.hasRole(Role.ADMIN)).isTrue();
