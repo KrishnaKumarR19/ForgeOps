@@ -153,6 +153,21 @@
             <version>${archunit.version}</version>
             <scope>test</scope>
         </dependency>
+
+        <!-- Apache HttpClient 5 (TEST ONLY): the JDK's HttpURLConnection, used by the
+             default TestRestTemplate, throws HttpRetryException ("cannot retry due to
+             server authentication, in streaming mode") when a POST with a body receives a
+             401 — it treats any 401 as an auth challenge and cannot replay a streamed body.
+             This breaks the negative POST /auth/register integration cases that legitimately
+             expect 401. HttpClient 5 sends a repeatable entity and returns the 401 as an
+             ordinary response, so the tests can assert it. Not used in production (the
+             production code never makes outbound HTTP calls). Version managed by the Boot
+             BOM. -->
+        <dependency>
+            <groupId>org.apache.httpcomponents.client5</groupId>
+            <artifactId>httpclient5</artifactId>
+            <scope>test</scope>
+        </dependency>
     </dependencies>
 
     <build>

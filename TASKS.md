@@ -166,9 +166,32 @@ role-based access.
   register 201 with no secret echoed; ENGINEER/VIEWER register→403 problem+json; missing
   token→401; invalid/expired→401; role-claim tampering→401 not elevation; deactivated→401)
   is written but **blocked locally by the Docker Engine 29 limitation** (`/info` returns
-  HTTP 400 to docker-java); Testcontainers did not execute locally. **Authoritative
-  verification pending CI — YELLOW.** No new business/domain endpoints (events/incidents/
-  analytics/SSE/AI), no refresh tokens, no OAuth/OIDC, no password reset, no MFA, no Redis.
+  HTTP 400 to docker-java); Testcontainers did not execute locally. No new business/domain
+  endpoints (events/incidents/analytics/SSE/AI), no refresh tokens, no OAuth/OIDC, no
+  password reset, no MFA, no Redis.
+  **CI run #1 (Slice 5): FAILED — 117 tests, 4 errors, 0 failures.** Authoritative cause
+  (from the CI surefire output): the four erroring tests were exactly the negative
+  **POST `/api/v1/auth/register`** cases (expired / invalid / missing / tampered token),
+  each throwing `ResourceAccessException: ... cannot retry due to server authentication, in
+  streaming mode` at the HTTP client — never a production defect. The JDK `HttpURLConnection`
+  used by `TestRestTemplate` streamed the POST body, and when the server correctly returned
+  `401` it treated the response as an auth challenge and tried to resend the request, which
+  it cannot do once the body has been written — independent of any `WWW-Authenticate` header
+  (the server sends none; httpBasic is disabled). (The 403 cases and the body-less `GET /me`
+  negative cases were unaffected, which is why only these four POST-401 tests failed.)
+  **CI run #2 (BufferingClientHttpRequestFactory) also FAILED — same 4 errors:** buffering at
+  the Spring layer does not help because the JDK connection still streams to
+  `getOutputStream()` and refuses to replay on 401. **Definitive fix (test-only):** added a
+  **test-scoped** `org.apache.httpcomponents.client5:httpclient5` dependency (Boot-BOM
+  managed) and switched `AuthorizationIntegrationTests` to drive requests via
+  `HttpComponentsClientHttpRequestFactory` (HttpClient 5), which sends a repeatable entity and
+  returns the `401` as an ordinary response so the negative POSTs assert their `401`/`403`.
+  Test-only: production makes no outbound HTTP calls; the server's `SecurityConfig`, entry
+  point, access-denied handler, JWT validation and authorization rules are unchanged, and all
+  401/403 assertions + request bodies are preserved. Non-container suite remains **80/80**
+  green; `clean verify` builds the jar. Integration tests still cannot run locally (Docker
+  Engine 29 block). **Status: YELLOW — definitive fix implemented, CI re-verification
+  pending.**
 - **Phase 4.2 — Slice 4: JWT validation + authenticated principal (In progress):**
   the authentication foundation for accepting a previously issued RS256 access token on
   protected requests — **authentication only, no authorization** (SECURITY_DESIGN §7/§11/§12).

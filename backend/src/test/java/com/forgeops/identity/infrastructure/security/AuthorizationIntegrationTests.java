@@ -29,9 +29,9 @@ import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
-import org.springframework.http.client.BufferingClientHttpRequestFactory;
-import org.springframework.http.client.SimpleClientHttpRequestFactory;
+import org.springframework.http.client.HttpComponentsClientHttpRequestFactory;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.web.util.DefaultUriBuilderFactory;
 
 /**
  * Authorization integration tests (Phase 4.2 Slice 5) over real HTTP against PostgreSQL
@@ -66,19 +66,19 @@ class AuthorizationIntegrationTests {
 
     @BeforeEach
     void cleanIdentityTables() {
-        // Use a request factory that BUFFERS the request body (Content-Length, not chunked
-        // streaming). The default JDK client streams the POST body and then cannot replay it
-        // when the server returns a 401 (it treats the response as an auth challenge and
-        // tries to resend), throwing "cannot retry due to server authentication, in
-        // streaming mode" before the test can read the 401. Buffering makes the body
-        // repeatable so negative POSTs reliably receive their 401/403 response. Test-only;
-        // production and the server's 401/403 behavior are unchanged.
-        SimpleClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
+        // Drive the real HTTP requests with Apache HttpClient 5 instead of the JDK's
+        // HttpURLConnection. The JDK client throws HttpRetryException ("cannot retry due to
+        // server authentication, in streaming mode") whenever a POST with a body receives a
+        // 401: it treats every 401 as an authentication challenge and tries to resend the
+        // request, which it cannot do once the body has been written. Buffering at the Spring
+        // layer does not help because the JDK connection itself refuses to replay. HttpClient
+        // 5 sends a repeatable entity and returns the 401 as an ordinary response, so the
+        // negative POST /auth/register cases can assert their 401/403. Test-only: production
+        // makes no outbound HTTP calls and the server's 401/403 behaviour is unchanged.
         rest = new TestRestTemplate();
-        rest.getRestTemplate().setRequestFactory(new BufferingClientHttpRequestFactory(factory));
+        rest.getRestTemplate().setRequestFactory(new HttpComponentsClientHttpRequestFactory());
         rest.getRestTemplate().setUriTemplateHandler(
-                new org.springframework.web.util.DefaultUriBuilderFactory(
-                        "http://localhost:" + port));
+                new DefaultUriBuilderFactory("http://localhost:" + port));
 
         jdbcTemplate.execute("TRUNCATE TABLE users CASCADE");
     }
