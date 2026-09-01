@@ -4,6 +4,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import com.forgeops.common.id.IdGenerator;
+import com.forgeops.common.id.UuidV7Generator;
+import com.forgeops.common.time.TimeConfiguration;
 import com.forgeops.identity.domain.AccountStatus;
 import com.forgeops.identity.domain.PasswordHash;
 import com.forgeops.identity.domain.Role;
@@ -28,7 +30,11 @@ import org.springframework.context.annotation.Import;
  */
 @DataJpaTest
 @AutoConfigureTestDatabase(replace = AutoConfigureTestDatabase.Replace.NONE)
-@Import({PostgresTestContainer.class, JpaUserRepository.class})
+// @DataJpaTest is a sliced context that loads only JPA beans, so the real application
+// infrastructure beans this test relies on must be imported explicitly: the JPA-backed
+// repository adapter, the UUID v7 IdGenerator (ADR-0023), and the Clock it depends on.
+// These are the genuine production beans — no mocks or test-only fakes.
+@Import({PostgresTestContainer.class, JpaUserRepository.class, UuidV7Generator.class, TimeConfiguration.class})
 class UserRepositoryIntegrationTests {
 
     @Autowired
