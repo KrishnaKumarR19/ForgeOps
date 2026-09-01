@@ -138,6 +138,37 @@ role-based access.
   Security Crypto `Argon2PasswordEncoder` + Bouncy Castle) behind the existing
   `PasswordHash` boundary, with the SECURITY_DESIGN §5 baseline parameters (ADR-0031).
   6 focused unit tests; verified locally.
+- **Phase 4.2 — Slice 4: JWT validation + authenticated principal (In progress):**
+  the authentication foundation for accepting a previously issued RS256 access token on
+  protected requests — **authentication only, no authorization** (SECURITY_DESIGN §7/§11/§12).
+  Added the minimal `spring-boot-starter-security` for a stateless Bearer-JWT filter chain.
+  Application layer: `AccessTokenValidator` port + `ValidatedAccessToken` value +
+  `InvalidAccessTokenException`; `AuthenticatedUser` principal (framework-free, no
+  Nimbus/Spring Security types); `AuthenticationService` resolves the token `sub` against
+  `UserRepository` and rejects unknown or non-`ACTIVE` users (PostgreSQL authoritative for
+  account status per §12), taking roles from the token claim (not re-queried). Infrastructure
+  `security`: `NimbusRs256AccessTokenValidator` (verifies with the configured RSA **public**
+  key, algorithm constrained explicitly to RS256 so `alg=none`/HS256/substitution are
+  rejected before verification; validates `iss`/`aud`/`exp`/`iat`(+60s skew) and requires
+  `sub`/`roles`/`jti`); `JwtAuthenticationFilter` (`OncePerRequest`, extracts only
+  `Authorization: Bearer`, never logs the token/header); `AuthenticatedUserAuthentication`
+  adapter; `ProblemDetailAuthenticationEntryPoint` (RFC 9457 `401` + correlation id);
+  `SecurityConfig` (stateless, CSRF/CORS/form-login/HTTP-Basic disabled, `POST
+  /api/v1/auth/login` and `/actuator/health` public, everything else authenticated,
+  `JwtAuthenticationFilter` before `UsernamePasswordAuthenticationFilter`). Api: protected
+  `GET /api/v1/auth/me` (API_CONTRACTS §4) returns the authenticated principal's id + roles.
+  The correlation-id filter remains at highest precedence, so `401`s keep their correlation
+  id. Reused the Slice-3 `JwtProperties`/`RsaKeyPair`; no second key system, no OAuth2/OIDC,
+  no sessions, no refresh tokens, no Redis. Non-container suite passes **64/64** locally,
+  including architecture + module-boundary tests (27 new: validator + algorithm-confusion/
+  tampering/expiry/claim attacks, `AuthenticationService` resolution incl. disabled/unknown,
+  and filter Bearer-extraction incl. client cannot override identity). Testcontainers
+  integration test (`JwtAuthenticationIntegrationTests`: login→token→`/me` 200; missing/
+  malformed/bad-signature/expired/wrong-issuer/wrong-audience→401; deactivated + unknown
+  user→401; login stays public) is written but **blocked locally by the Docker Engine 29
+  limitation** (`/info` returns HTTP 400 to docker-java); Testcontainers did not execute
+  locally. **Authoritative verification pending CI — YELLOW.** No role-based authorization,
+  no ADMIN/ENGINEER/INCIDENT_MANAGER/VIEWER enforcement, no `403` model, no refresh tokens.
 - **Phase 4.2 — Slice 3: login + RS256 JWT access-token issuance (In progress):**
   application `LoginService` (loads user, rejects unknown/disabled/wrong-password
   identically via `PasswordHasher.verify` with dummy-hash timing parity, no enumeration)

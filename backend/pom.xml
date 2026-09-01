@@ -105,14 +105,20 @@
             <version>${bouncycastle.version}</version>
         </dependency>
 
-        <!-- Nimbus JOSE + JWT: RS256 access-token signing (Phase 4.2 Slice 3, ADR-0032).
-             This is the JWT library Spring Security itself uses; version managed by the
-             Boot BOM. It does NOT pull in the Spring Security web filter chain — this
-             slice issues tokens only, it does not validate them or add authorization. -->
+        <!-- Nimbus JOSE + JWT: RS256 access-token signing (Phase 4.2 Slice 3, ADR-0032)
+             and validation (Slice 4). Version managed by the Boot BOM. -->
         <dependency>
             <groupId>com.nimbusds</groupId>
             <artifactId>nimbus-jose-jwt</artifactId>
             <version>${nimbus-jose-jwt.version}</version>
+        </dependency>
+
+        <!-- Spring Security (Phase 4.2 Slice 4): the minimal starter needed for a
+             stateless Bearer-JWT filter chain that distinguishes authenticated vs
+             unauthenticated requests. No OAuth2/OIDC, no sessions, no form login. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-security</artifactId>
         </dependency>
 
         <!-- Test foundation (JUnit 5, Spring Boot Test, Mockito). -->
