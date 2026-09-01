@@ -25,7 +25,13 @@ class JpaUserRepository implements UserRepository {
 
     @Override
     public User save(User user) {
-        UserEntity saved = jpa.save(toEntity(user));
+        // saveAndFlush (not save) so the INSERT reaches PostgreSQL as part of this call.
+        // Plain save() only stages the entity in the persistence context and defers the
+        // flush, which would hide authoritative DB constraint violations (e.g. the unique
+        // username constraint uq_users_username) from the caller until an unpredictable
+        // later flush. Flushing here surfaces such violations at the persistence boundary
+        // at save time, keeping uniqueness enforcement in PostgreSQL rather than in Java.
+        UserEntity saved = jpa.saveAndFlush(toEntity(user));
         return toDomain(saved);
     }
 
