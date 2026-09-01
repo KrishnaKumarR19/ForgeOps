@@ -21,6 +21,7 @@ import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.test.web.client.TestRestTemplate;
+import org.springframework.boot.test.web.server.LocalServerPort;
 import org.springframework.context.annotation.Import;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
@@ -28,6 +29,8 @@ import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
+import org.springframework.http.client.BufferingClientHttpRequestFactory;
+import org.springframework.http.client.SimpleClientHttpRequestFactory;
 import org.springframework.jdbc.core.JdbcTemplate;
 
 /**
@@ -48,8 +51,8 @@ class AuthorizationIntegrationTests {
 
     private static final String PASSWORD = "CorrectHorseBatteryStaple";
 
-    @Autowired
-    private TestRestTemplate rest;
+    @LocalServerPort
+    private int port;
     @Autowired
     private UserProvisioningService provisioning;
     @Autowired
@@ -59,16 +62,35 @@ class AuthorizationIntegrationTests {
     @Autowired
     private JdbcTemplate jdbcTemplate;
 
+    private TestRestTemplate rest;
+
     @BeforeEach
     void cleanIdentityTables() {
+        // Use a request factory that BUFFERS the request body (Content-Length, not chunked
+        // streaming). The default JDK client streams the POST body and then cannot replay it
+        // when the server returns a 401 (it treats the response as an auth challenge and
+        // tries to resend), throwing "cannot retry due to server authentication, in
+        // streaming mode" before the test can read the 401. Buffering makes the body
+        // repeatable so negative POSTs reliably receive their 401/403 response. Test-only;
+        // production and the server's 401/403 behavior are unchanged.
+        SimpleClientHttpRequestFactory factory = new SimpleClientHttpRequestFactory();
+        rest = new TestRestTemplate();
+        rest.getRestTemplate().setRequestFactory(new BufferingClientHttpRequestFactory(factory));
+        rest.getRestTemplate().setUriTemplateHandler(
+                new org.springframework.web.util.DefaultUriBuilderFactory(
+                        "http://localhost:" + port));
+
         jdbcTemplate.execute("TRUNCATE TABLE users CASCADE");
     }
 
     // ----- helpers -------------------------------------------------------------
 
     private String login(String username) {
-        ResponseEntity<Map> response = rest.postForEntity("/api/v1/auth/login",
-                Map.of("username", username, "password", PASSWORD), Map.class);
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(MediaType.APPLICATION_JSON);
+        ResponseEntity<Map> response = rest.exchange("/api/v1/auth/login", HttpMethod.POST,
+                new HttpEntity<>(Map.of("username", username, "password", PASSWORD), headers),
+                Map.class);
         assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
         return (String) response.getBody().get("access_token");
     }
@@ -201,10 +223,12 @@ class AuthorizationIntegrationTests {
         // A real VIEWER logs in; we forge a token claiming ADMIN but corrupt the signature.
         User viewer = provisioning.provision("view", PASSWORD, EnumSet.of(Role.VIEWER));
         String forged = signWithAppKey(claimsFor(viewer, List.of("ADMIN")).build());
-        // Corrupt the signature so it cannot be a valid ADMIN token.
+        // Deterministically break the signature so it cannot verify: flip the first
+        // signature character to a different base64url character.
         String[] parts = forged.split("\\.");
-        String tampered = parts[0] + "." + parts[1] + "."
-                + parts[2].substring(0, parts[2].length() - 2) + "AB";
+        char first = parts[2].charAt(0);
+        char replacement = (first == 'A') ? 'B' : 'A';
+        String tampered = parts[0] + "." + parts[1] + "." + replacement + parts[2].substring(1);
 
         ResponseEntity<String> response = register(tampered, "nope");
 
