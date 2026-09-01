@@ -1,0 +1,50 @@
+name: Backend CI
+
+# Authoritative verification for the ForgeOps backend, including the PostgreSQL
+# Testcontainers integration tests that cannot run reliably on local Docker Desktop with
+# Docker Engine 29.x. GitHub's Ubuntu runners provide a native Linux Docker daemon that
+# Testcontainers detects with no special configuration — no Docker API overrides, no
+# DOCKER_HOST, no Testcontainers workaround properties.
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'backend/**'
+      - '.github/workflows/backend-ci.yml'
+  pull_request:
+    paths:
+      - 'backend/**'
+      - '.github/workflows/backend-ci.yml'
+
+jobs:
+  build-and-test:
+    name: Build & test (Java 21, Testcontainers PostgreSQL)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 21 (Temurin) with Maven cache
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+          cache-dependency-path: backend/pom.xml
+
+      - name: Build and run the full test lifecycle
+        working-directory: backend
+        # No test exclusions: unit, architecture (ArchUnit), UUID/PasswordHash, the
+        # PostgreSQL Testcontainers integration tests, and the application-context/health
+        # tests all run. Any failure fails the workflow. No H2 fallback, no skipped tests.
+        run: ./mvnw -B clean verify
+
+      - name: Upload Surefire reports on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: surefire-reports
+          path: backend/target/surefire-reports/
+          if-no-files-found: ignore

@@ -1,0 +1,14 @@
+# Build output
+target/
+
+# IDE
+.idea/
+*.iml
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Maven wrapper: keep the scripts and properties committed for reproducibility.
+# (The wrapper jar under .mvn/wrapper is committed intentionally.)

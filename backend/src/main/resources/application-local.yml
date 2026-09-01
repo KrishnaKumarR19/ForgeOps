@@ -1,0 +1,28 @@
+# ForgeOps backend — LOCAL development profile (activate with: --spring.profiles.active=local).
+#
+# This file demonstrates the configuration convention for values that WILL be needed in
+# later phases. It contains NO real secrets — only environment-variable placeholders.
+# Nothing here is required for the Phase 2 foundation to start (the app runs with defaults).
+#
+# When infrastructure is introduced in later phases, credentials MUST come from the
+# environment (or a secrets manager), never from committed files. Examples of the
+# convention (intentionally commented out — no infrastructure is wired up in Phase 2):
+#
+# spring:
+#   datasource:
+#     url: ${FORGEOPS_DB_URL:jdbc:postgresql://localhost:5432/forgeops}
+#     username: ${FORGEOPS_DB_USERNAME}
+#     password: ${FORGEOPS_DB_PASSWORD}
+#   rabbitmq:
+#     host: ${FORGEOPS_RABBITMQ_HOST:localhost}
+#     username: ${FORGEOPS_RABBITMQ_USERNAME}
+#     password: ${FORGEOPS_RABBITMQ_PASSWORD}
+#   data:
+#     redis:
+#       host: ${FORGEOPS_REDIS_HOST:localhost}
+#
+# forgeops:
+#   security:
+#     jwt-secret: ${FORGEOPS_JWT_SECRET}   # supplied via environment; never committed
+
+# No active configuration is needed for Phase 2; this profile is a documented placeholder.

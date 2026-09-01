@@ -1,0 +1,47 @@
+# ForgeOps backend — default application configuration (Phase 2 foundation).
+#
+# This file holds safe, non-secret defaults only. Environment-specific values and
+# secrets are supplied via environment variables / profile files, never hardcoded here.
+# See application-local.yml for local development placeholders.
+
+spring:
+  application:
+    name: forgeops-backend
+  main:
+    banner-mode: "off"
+
+  # PostgreSQL datasource (authoritative store, ADR-0003). Values come from the environment;
+  # no credentials are committed. There is no default password.
+  datasource:
+    url: ${FORGEOPS_DB_URL:jdbc:postgresql://localhost:5432/forgeops}
+    username: ${FORGEOPS_DB_USERNAME:forgeops}
+    password: ${FORGEOPS_DB_PASSWORD:}
+
+  jpa:
+    # The schema is owned by Flyway migrations; Hibernate only validates the mapping.
+    hibernate:
+      ddl-auto: validate
+    open-in-view: false
+    properties:
+      hibernate:
+        jdbc:
+          time_zone: UTC
+
+  # Flyway owns the schema; migrations live in classpath:db/migration.
+  flyway:
+    enabled: true
+
+server:
+  port: ${SERVER_PORT:8080}
+
+# Actuator: expose only the health endpoint in this phase. Prometheus, business metrics,
+# and detailed monitoring are deferred to later phases (ARCHITECTURE.md §4.4).
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health
+  endpoint:
+    health:
+      probes:
+        enabled: true

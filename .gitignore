@@ -1,0 +1,43 @@
+# ForgeOps — repository-root ignore rules.
+# Intentional and project-specific; module-level ignores live in each module (e.g.
+# backend/.gitignore). This root file guards against committing build output, local
+# environment state, and — importantly — any secret/credential material anywhere.
+
+# Build output (any module)
+target/
+build/
+*.class
+
+# Test / build reports and logs
+*.log
+surefire-reports/
+
+# IDE / editor metadata
+.idea/
+*.iml
+.vscode/
+*.iws
+*.ipr
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Local environment and secrets — never commit real credentials.
+# Use committed *.example templates with placeholders instead.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+secrets.*
+application-secrets.*
+
+# Local infrastructure / database state (introduced in later phases)
+*.pid
+docker-data/
+pgdata/
