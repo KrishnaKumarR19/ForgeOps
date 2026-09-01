@@ -33,6 +33,9 @@
              Spring Boot BOM, so pinned explicitly to a version compatible with the
              Spring Security 6.3 line in Boot 3.3.4. -->
         <bouncycastle.version>1.78.1</bouncycastle.version>
+        <!-- Nimbus JOSE + JWT: not managed by the Boot BOM unless Spring Security web is on
+             the classpath, so pinned explicitly. Compatible with Java 21 / Spring 6.3. -->
+        <nimbus-jose-jwt.version>9.40</nimbus-jose-jwt.version>
         <!-- Testcontainers version is managed by the Spring Boot 3.3.4 BOM (1.19.8).
              NOTE: neither 1.19.8 nor a 1.20.x override resolves the Docker Engine 29.x
              HTTP-400 /info issue (docker-java defaults to an API version Engine 29
@@ -100,6 +103,16 @@
             <groupId>org.bouncycastle</groupId>
             <artifactId>bcprov-jdk18on</artifactId>
             <version>${bouncycastle.version}</version>
+        </dependency>
+
+        <!-- Nimbus JOSE + JWT: RS256 access-token signing (Phase 4.2 Slice 3, ADR-0032).
+             This is the JWT library Spring Security itself uses; version managed by the
+             Boot BOM. It does NOT pull in the Spring Security web filter chain — this
+             slice issues tokens only, it does not validate them or add authorization. -->
+        <dependency>
+            <groupId>com.nimbusds</groupId>
+            <artifactId>nimbus-jose-jwt</artifactId>
+            <version>${nimbus-jose-jwt.version}</version>
         </dependency>
 
         <!-- Test foundation (JUnit 5, Spring Boot Test, Mockito). -->

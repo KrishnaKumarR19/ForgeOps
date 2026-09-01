@@ -138,6 +138,19 @@ role-based access.
   Security Crypto `Argon2PasswordEncoder` + Bouncy Castle) behind the existing
   `PasswordHash` boundary, with the SECURITY_DESIGN §5 baseline parameters (ADR-0031).
   6 focused unit tests; verified locally.
+- **Phase 4.2 — Slice 3: login + RS256 JWT access-token issuance (In progress):**
+  application `LoginService` (loads user, rejects unknown/disabled/wrong-password
+  identically via `PasswordHasher.verify` with dummy-hash timing parity, no enumeration)
+  + `AccessTokenIssuer` port; infrastructure `NimbusRs256AccessTokenIssuer` (RS256, claims
+  `sub`/`roles`/`iss`/`aud`/`iat`/`exp`/`jti` derived server-side via `Clock` +
+  `IdGenerator`); `JwtProperties`/`JwtKeyConfiguration` (RSA keys from env, never
+  committed); public `POST /api/v1/auth/login` (`200 {access_token,token_type,expires_in}`
+  / generic `401` RFC 9457) per API_CONTRACTS §4 and ADR-0032. Added `nimbus-jose-jwt`
+  (pinned). Test-only RSA keys in `src/test/resources`. Non-container suite passes 37/37
+  locally (9 new unit tests: login + JWT issuer). Login Testcontainers integration tests
+  written; blocked locally by Docker Engine 29; **authoritative verification pending CI.**
+  No JWT validation filter, principal extraction, authorization, 401/403 chain, or refresh
+  tokens.
 - **Phase 4.2 — Slice 2: admin provisioning + bootstrap admin (In progress):**
   application-layer `UserProvisioningService` (server-generated UUID v7 id, Argon2id hash,
   role assignment, ACTIVE status, `@Transactional`, DB-authoritative username uniqueness)
