@@ -29,6 +29,10 @@
         <java.version>21</java.version>
         <!-- ArchUnit: enforce modular-monolith boundaries (foundation-only usage). -->
         <archunit.version>1.3.0</archunit.version>
+        <!-- Bouncy Castle (Argon2 provider for spring-security-crypto). Not managed by the
+             Spring Boot BOM, so pinned explicitly to a version compatible with the
+             Spring Security 6.3 line in Boot 3.3.4. -->
+        <bouncycastle.version>1.78.1</bouncycastle.version>
         <!-- Testcontainers version is managed by the Spring Boot 3.3.4 BOM (1.19.8).
              NOTE: neither 1.19.8 nor a 1.20.x override resolves the Docker Engine 29.x
              HTTP-400 /info issue (docker-java defaults to an API version Engine 29
@@ -79,6 +83,23 @@
             <groupId>org.postgresql</groupId>
             <artifactId>postgresql</artifactId>
             <scope>runtime</scope>
+        </dependency>
+
+        <!-- Spring Security Crypto ONLY: provides Argon2PasswordEncoder for password
+             hashing (Phase 4.2 Slice 1, ADR-0031). This is the crypto module, NOT
+             spring-boot-starter-security — no web filter chain, no authentication, no
+             authorization is pulled in by this slice. Version managed by the Boot BOM. -->
+        <dependency>
+            <groupId>org.springframework.security</groupId>
+            <artifactId>spring-security-crypto</artifactId>
+        </dependency>
+
+        <!-- Bouncy Castle: required at runtime by Argon2PasswordEncoder for the Argon2
+             implementation. Version managed by the Boot BOM. -->
+        <dependency>
+            <groupId>org.bouncycastle</groupId>
+            <artifactId>bcprov-jdk18on</artifactId>
+            <version>${bouncycastle.version}</version>
         </dependency>
 
         <!-- Test foundation (JUnit 5, Spring Boot Test, Mockito). -->

@@ -129,8 +129,27 @@ role-based access.
   [0035](./DECISIONS.md#adr-0035--separate-jpa-entities-from-the-domain-model) (separate
   JPA entities) recorded. Bootstrap-admin credential creation **deferred to Phase 4.2**
   (needs hashing). Domain unit + architecture tests pass (15/15).
-  **Verification status: YELLOW — not yet complete.** The Testcontainers PostgreSQL
-  integration tests are written but cannot execute here. **Root cause (investigated,
+  **Verification status: GREEN — complete.** Authoritative GitHub Actions CI (Linux
+  runner) executed the full Maven lifecycle including the PostgreSQL/Testcontainers
+  integration tests, which passed. (The local Docker Desktop Engine 29 limitation below is
+  retained as an environment note; it does not affect CI.)
+- **Phase 4.2 — Slice 1: Argon2id password hashing (Done):** framework-free
+  `PasswordHasher` domain port + `Argon2PasswordHasher` infrastructure adapter (Spring
+  Security Crypto `Argon2PasswordEncoder` + Bouncy Castle) behind the existing
+  `PasswordHash` boundary, with the SECURITY_DESIGN §5 baseline parameters (ADR-0031).
+  6 focused unit tests; verified locally.
+- **Phase 4.2 — Slice 2: admin provisioning + bootstrap admin (In progress):**
+  application-layer `UserProvisioningService` (server-generated UUID v7 id, Argon2id hash,
+  role assignment, ACTIVE status, `@Transactional`, DB-authoritative username uniqueness)
+  and an idempotent env-configured bootstrap admin (`BootstrapAdminProperties` +
+  `BootstrapAdminInitializer` under `forgeops.security.bootstrap-admin.*`; creates the
+  admin only when absent, never overwrites, never logs the secret). No self-registration
+  endpoint, no JWT/auth/authorization. Non-container suite passes 28/28 locally (7 new
+  provisioning unit tests). Provisioning + bootstrap Testcontainers integration tests are
+  written but blocked locally by the Docker Engine 29 limitation; **authoritative
+  verification pending CI.**
+  **Historical note (4.1 root cause, retained):
+  Root cause (investigated,
   evidence-backed):** Docker Engine 29 raised its minimum Docker API version; the
   docker-java client bundled with Testcontainers defaults to an older API version below
   that minimum, so the daemon rejects the `/info` call with HTTP 400 (empty body). The
