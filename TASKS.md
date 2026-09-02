@@ -138,6 +138,44 @@ role-based access.
   Security Crypto `Argon2PasswordEncoder` + Bouncy Castle) behind the existing
   `PasswordHash` boundary, with the SECURITY_DESIGN §5 baseline parameters (ADR-0031).
   6 focused unit tests; verified locally.
+- **Phase 5 — Slice 1: event ingestion core (In progress):** the synchronous
+  authenticated-submit → validate → idempotency → persist path for operational events
+  (FR-EV-1..4, API_CONTRACTS §6/§7, PERSISTENCE_MODEL §5/§6/§16/§17, ADR-0016/0023/0024/0025).
+  New `events` module (`domain`/`application`/`infrastructure`/`api`) mirroring the identity
+  layering (ADR-0030/0035). `POST /api/v1/events`: authenticated ADMIN/ENGINEER/INCIDENT_MANAGER
+  (VIEWER → `403`), `202 Accepted` with the accepted-event representation (`id`, attributes,
+  `received_at`, `status: RECEIVED`, nullable `incident_id`, `payload` — no `payload_hash`,
+  no outbox reference per §26). Producer identity (`client_id`) is taken from the JWT
+  principal (`AuthenticatedUser.userId()`), never from the request (SECURITY_DESIGN §9,
+  INV-SEC-005). Server-generated UUID v7 id via the existing `IdGenerator`. Durable
+  persistence in PostgreSQL (`operational_events`, Flyway `V2__events.sql`); JSONB payload via
+  `@JdbcTypeCode(SqlTypes.JSON)` (no new runtime dependency). Idempotency scoped to
+  `(client_id, idempotency_key)` with the DB unique constraint authoritative: Case A new →
+  `202`; Case B same key + same canonicalized payload (`payload_hash`, SHA-256 over
+  Jackson-canonicalized JSON with sorted keys, ADR-0025) → `202` replay of the same event;
+  Case C same key + different payload → `409` (RFC 9457). Acceptance is `@Transactional`
+  (compatible with the Phase-6 event+outbox atomic commit); a concurrent-duplicate race that
+  slips past the pre-check is caught at the unique constraint and re-resolved to replay/conflict,
+  so two concurrent identical requests yield exactly one event. Non-container suite passes
+  **104/104** locally, incl. architecture + module-boundary tests (24 new: canonicalizer/hash
+  determinism, ingestion first/replay/conflict/producer-scoped/server-id/race, and the
+  MockMvc security+validation boundary incl. VIEWER 403, unauthenticated 401, 400 validation,
+  409 conflict, and client-cannot-override-producer-identity). Testcontainers integration test
+  (`EventIngestionIntegrationTests`: persist+retrieve, unique constraint, replay `202`,
+  conflict `409`, producer-scoped keys, VIEWER `403`, unauthenticated `401`, no-key distinct
+  events, concurrent-duplicate → exactly one event) is written but **blocked locally by the
+  Docker Engine 29 limitation**; Testcontainers did not execute locally. **Reference data:**
+  `service`/`environment` are real reference data owned by the events module (DOMAIN_MODEL
+  §1.1, PERSISTENCE_MODEL §4/§5): `operational_events.service_id`/`environment_id` are FKs to
+  `services`/`environments`; the submitted keys are resolved to ids during ingestion and an
+  unknown key is rejected with `422` (`UnknownReferenceException`, RFC 9457) before any
+  persistence (INV-SEC-003). The controlled set is provisioned by the Flyway migration
+  (ADR-0034) — the approved reference-data provisioning mechanism; **service/environment
+  management (CRUD) APIs remain deferred** to a later ADMIN slice (API_CONTRACTS §5), a
+  separate capability from the tables/FK/seed. **NOT in this slice:** transactional outbox,
+  RabbitMQ, async consumers, incident detection/correlation, Redis, SSE, AI, frontend, rate
+  limiting, service/environment CRUD. **Status: YELLOW — implementation complete,
+  authoritative CI/integration verification pending.**
 - **Phase 4.2 — Slice 5: role-based authorization + 401/403 boundary (In progress):**
   the authorization foundation on top of Slice 4 authentication — **authorization only**
   (SECURITY_DESIGN §14/§15, API_CONTRACTS §4). Roles are mapped to Spring authorities in

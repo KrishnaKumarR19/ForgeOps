@@ -61,6 +61,10 @@ public class SecurityConfig {
                         .requestMatchers(HttpMethod.POST, "/api/v1/auth/login").permitAll()
                         .requestMatchers("/actuator/health", "/actuator/health/**").permitAll()
                         .requestMatchers(HttpMethod.POST, "/api/v1/auth/register").hasRole("ADMIN")
+                        // Event submission: ADMIN/ENGINEER/INCIDENT_MANAGER allowed, VIEWER
+                        // denied (403) per API_CONTRACTS.md §5 authorization matrix.
+                        .requestMatchers(HttpMethod.POST, "/api/v1/events")
+                            .hasAnyRole("ADMIN", "ENGINEER", "INCIDENT_MANAGER")
                         .anyRequest().authenticated())
                 .exceptionHandling(ex -> ex
                         .authenticationEntryPoint(entryPoint)
