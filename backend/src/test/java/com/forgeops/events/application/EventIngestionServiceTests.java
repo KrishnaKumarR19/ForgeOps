@@ -141,6 +141,11 @@ class EventIngestionServiceTests {
         @Override
         public void recordFailure(UUID id, int attempts, java.time.Instant nextAttemptAt, String lastError) {
         }
+
+        @Override
+        public int deletePublishedOlderThan(java.time.Instant cutoff, int batchSize) {
+            return 0;
+        }
     }
 
     private final InMemoryEvents repo = new InMemoryEvents();

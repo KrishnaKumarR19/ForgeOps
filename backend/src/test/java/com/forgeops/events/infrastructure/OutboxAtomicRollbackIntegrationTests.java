@@ -70,6 +70,11 @@ class OutboxAtomicRollbackIntegrationTests {
                 public void recordFailure(java.util.UUID id, int attempts,
                                           java.time.Instant nextAttemptAt, String lastError) {
                 }
+
+                @Override
+                public int deletePublishedOlderThan(java.time.Instant cutoff, int batchSize) {
+                    return 0;
+                }
             };
         }
     }

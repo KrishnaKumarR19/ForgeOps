@@ -75,6 +75,11 @@ class OutboxPublishServiceTests {
                         m.createdAt(), null, nextAttemptAt, lastError));
             }
         }
+
+        @Override
+        public int deletePublishedOlderThan(Instant cutoff, int batchSize) {
+            return 0; // not exercised by publisher tests
+        }
     }
 
     /** Broker that fails for a configured set of message ids. */

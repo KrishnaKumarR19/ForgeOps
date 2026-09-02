@@ -60,6 +60,15 @@ forgeops:
       backoff:
         base-delay: ${FORGEOPS_OUTBOX_BACKOFF_BASE:PT5S}
         max-delay: ${FORGEOPS_OUTBOX_BACKOFF_MAX:PT5M}
+    # Outbox retention cleanup (Phase 6 Slice 4, PERSISTENCE_MODEL §15, INV-OUTBOX-006). A
+    # periodic job prunes PUBLISHED rows older than the retention window in bounded batches;
+    # PENDING/retryable rows are never deleted. ForgeOps v1 decision: retain 7 days (PT168H),
+    # run hourly (PT1H), delete 500 rows per batch. ISO-8601 durations.
+    cleanup:
+      enabled: ${FORGEOPS_OUTBOX_CLEANUP_ENABLED:true}
+      retention: ${FORGEOPS_OUTBOX_CLEANUP_RETENTION:PT168H}
+      fixed-delay: ${FORGEOPS_OUTBOX_CLEANUP_FIXED_DELAY:PT1H}
+      batch-size: ${FORGEOPS_OUTBOX_CLEANUP_BATCH_SIZE:500}
   events:
     rabbitmq:
       exchange: ${FORGEOPS_EVENTS_EXCHANGE:forgeops.events}

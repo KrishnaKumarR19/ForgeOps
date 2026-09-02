@@ -372,6 +372,13 @@ it does not need to eliminate them. Recorded in
   rows likewise remain until published or explicitly triaged.
 - **Duration is configurable, not hardcoded** — no arbitrary period is committed here; the
   default is an implementation/configuration decision.
+- **ForgeOps v1 implementation decision (Phase 6 Slice 4):** retention window **7 days**
+  (`PT168H`), cleanup cadence **hourly** (`PT1H` fixed delay), delete **500 rows per batch**;
+  enabled by default. All are configuration-driven (`forgeops.outbox.cleanup.{enabled,
+  retention,fixed-delay,batch-size}`) and overridable per environment; non-positive values
+  fall back to these defaults. Eligibility timestamp is `published_at`; deletion is bounded
+  and repeated until no eligible rows remain, each batch in its own transaction. These are
+  operational defaults, not an architectural change — the safety model above is unchanged.
 
 ---
 

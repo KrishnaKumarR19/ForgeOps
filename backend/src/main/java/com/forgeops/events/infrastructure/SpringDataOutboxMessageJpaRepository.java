@@ -59,4 +59,27 @@ interface SpringDataOutboxMessageJpaRepository extends JpaRepository<OutboxMessa
     int recordFailure(@Param("id") UUID id, @Param("attempts") int attempts,
                       @Param("nextAttemptAt") Instant nextAttemptAt,
                       @Param("lastError") String lastError);
+
+    /**
+     * Retention cleanup (Phase 6 Slice 4, PERSISTENCE_MODEL §15, INV-OUTBOX-006): bounded delete
+     * of already-PUBLISHED rows older than {@code cutoff}. The inner {@code SELECT ... ORDER BY
+     * published_at LIMIT :batchSize} uses the partial index {@code (published_at) WHERE
+     * status='PUBLISHED'} and caps each statement so a large backlog is pruned in small,
+     * committable batches. The {@code status='PUBLISHED' AND published_at < :cutoff} predicate
+     * (a {@code NULL published_at} fails {@code < :cutoff}) guarantees no PENDING/retryable/
+     * unpublished row is ever removed (INV-OUTBOX-003). Must run inside a transaction.
+     *
+     * @return the number of rows deleted by this call
+     */
+    @Modifying
+    @Query(value = """
+            DELETE FROM outbox_messages
+            WHERE id IN (
+                SELECT id FROM outbox_messages
+                WHERE status = 'PUBLISHED' AND published_at < :cutoff
+                ORDER BY published_at
+                LIMIT :batchSize
+            )
+            """, nativeQuery = true)
+    int deletePublishedOlderThan(@Param("cutoff") Instant cutoff, @Param("batchSize") int batchSize);
 }

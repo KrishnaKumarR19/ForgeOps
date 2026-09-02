@@ -50,6 +50,11 @@ class JpaOutboxMessageRepository implements OutboxMessageRepository {
         jpa.recordFailure(id, attempts, nextAttemptAt, lastError);
     }
 
+    @Override
+    public int deletePublishedOlderThan(Instant cutoff, int batchSize) {
+        return jpa.deletePublishedOlderThan(cutoff, batchSize);
+    }
+
     private static OutboxMessageEntity toEntity(OutboxMessage m) {
         return new OutboxMessageEntity(
                 m.id(),

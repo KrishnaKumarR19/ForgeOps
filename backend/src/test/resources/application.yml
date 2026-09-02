@@ -36,6 +36,11 @@ forgeops:
   outbox:
     publisher:
       enabled: false
+    # Outbox retention cleanup (Phase 6 Slice 4): disable the background cleanup timer in tests
+    # so it never races assertions. Cleanup integration tests drive
+    # OutboxCleanupService.cleanupOnce() directly; the cleanup logic itself is unaffected.
+    cleanup:
+      enabled: false
   # Async event consumer (Phase 6 Slice 3): disable the @RabbitListener by default in tests so
   # a live consumer never races assertions in unrelated context tests. The consumer integration
   # tests re-enable it explicitly (forgeops.events.consumer.enabled=true). Shorten the retry
