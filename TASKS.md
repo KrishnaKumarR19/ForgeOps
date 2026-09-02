@@ -1,6 +1,6 @@
 # ForgeOps — Delivery Phases & Milestones
 
-Status: Implementation in progress — Phase 5 (Event Ingestion, FR-EV-1..4) complete/CI-verified; Phase 6 (Async Event Processing) complete/CI-verified (Slices 1–4: transactional outbox, publisher→RabbitMQ, idempotent consumer, retention cleanup); Phase 7 (Incident Domain) in progress — Slice 1 (incident persistence foundation) CI-verified; Slices 2–4 not started (Slice 4 detection gated on open correlation decisions)
+Status: Implementation in progress — Phase 5 (Event Ingestion, FR-EV-1..4) complete/CI-verified; Phase 6 (Async Event Processing) complete/CI-verified (Slices 1–4: transactional outbox, publisher→RabbitMQ, idempotent consumer, retention cleanup); Phase 7 (Incident Domain) in progress — Slices 1–2 CI-verified (incident persistence foundation; manual lifecycle management + optimistic concurrency + audit); Slice 3 (assignment/comments) not started; Slice 4 (detection) gated on open correlation decisions
 Related: [PRD.md](./PRD.md) · [ARCHITECTURE.md](./ARCHITECTURE.md) · [DECISIONS.md](./DECISIONS.md) · [ENGINEERING_CONSTITUTION.md](./ENGINEERING_CONSTITUTION.md)
 
 > This is a **high-level roadmap of phases and milestones only** — not a detailed task
@@ -138,6 +138,43 @@ role-based access.
   Security Crypto `Argon2PasswordEncoder` + Bouncy Castle) behind the existing
   `PasswordHash` boundary, with the SECURITY_DESIGN §5 baseline parameters (ADR-0031).
   6 focused unit tests; verified locally.
+- **Phase 7 — Slice 2: manual incident management + lifecycle + optimistic concurrency + audit (Done):**
+  manual incident management over the Slice 1 aggregate (FR-IN-1..4/6/7; DOMAIN_MODEL §10/§14;
+  API_CONTRACTS §5/§9/§10/§11/§26; INV-INC-002..008; ADR-0018/0027/0028). Domain: lifecycle
+  commands on the `Incident` aggregate (acknowledge/investigate/mitigate/resolve/close +
+  changeSeverity), each returning a new aggregate at `version + 1` with the documented timestamp
+  side effects (`resolved_at` on RESOLVED, `closed_at` on CLOSED; reopen — RESOLVED/MITIGATED →
+  INVESTIGATING — **preserves** existing timestamps, a reported decision since the docs are silent);
+  invalid transitions raise `IllegalIncidentTransitionException` (→ 409). New **audit module**
+  (`com.forgeops.audit`): framework-free `AuditEntry` + `AuditActorType` (USER/SYSTEM) +
+  append-only `AuditEntryRepository`; JPA entity/adapter; `V5__audit.sql` (`audit_entries` with a
+  nullable `actor_id` FK → users, a polymorphic soft `resource_id` (no FK, §17), `actor_type`
+  CHECK, JSONB `old_value`/`new_value`, and the §16 indexes). Application `IncidentService` owns
+  the transaction: an atomic incident-mutation + audit-insert (INV-INC-007) guarded by an
+  optimistic compare-and-set (`UPDATE ... WHERE id = ? AND version = ?`, INV-INC-005) that
+  distinguishes NOT_FOUND (404), stale version (412), and invalid transition (409); the audit
+  actor is the JWT principal (INV-SEC-005). API `IncidentController` (`/api/v1/incidents`): POST
+  create (201 + strong ETag), GET `/{id}` (200 + ETag, 404), and the six command endpoints
+  (If-Match required — missing → 428, stale → 412); `version` is surfaced only as the ETag
+  (ADR-0028); RFC 9457 problem responses with correlation id. RBAC wired in `SecurityConfig`
+  (read = all four roles; create + acknowledge/investigate/mitigate/resolve/severity =
+  ADMIN/ENGINEER/INCIDENT_MANAGER; **close = ADMIN/INCIDENT_MANAGER only**; VIEWER cannot mutate).
+  **Scope:** manual management only — no detection/correlation (Slice 4, gated), no assignment/
+  comments (Slice 3), no Phase 6 semantic changes. Non-container suite **180/180** locally incl.
+  architecture + module-boundary tests (18 domain lifecycle + 8 application service). Testcontainers
+  PostgreSQL `IncidentLifecyclePersistenceIntegrationTests` (create+audit, version-increments-once,
+  stale-412-writes-no-audit, resolve/close timestamps, append-only, deterministic concurrent
+  one-winner, DB CHECK) and real-HTTP `IncidentApiIntegrationTests` (401; create/close RBAC incl.
+  VIEWER 403 and ENGINEER-cannot-close; ETag; 404; 409 invalid transition; If-Match 428/412/
+  success) are **blocked locally by the Docker Engine 29 limitation**; executed on CI. **One
+  CI-only test-fixture issue was found and fixed (test-only, no production change):** the
+  persistence IT used a hardcoded audit actor id that was never persisted, violating the
+  `audit_entries.actor_id → users(id)` FK (7 errors); the IT now provisions that user in
+  `@BeforeEach`. A temporary failure-only CI diagnostic step was added to surface the surefire
+  error and then removed. **Status: GREEN — verified by GitHub Actions CI (run 33655558580,
+  commit d44d784): `./mvnw -B clean verify` succeeded on ubuntu-latest with native Docker, full
+  unit + architecture + module-boundary + Testcontainers PostgreSQL & RabbitMQ suite with no
+  exclusions.**
 - **Phase 7 — Slice 1: incident persistence + aggregate foundation (Done):** establishes the
   persisted `Incident` aggregate and its DB foundation (DOMAIN_MODEL §2/§10, PERSISTENCE_MODEL
   §8/§9/§16/§19, INV-INC-001/004/005). New `incidents.domain`: framework-free `Incident`
@@ -564,7 +601,12 @@ audit, and event-driven detection/correlation. Sliced per the approved reconnais
   incidents(id)` FK; JPA entity/adapter. Persistence foundation only — no lifecycle commands,
   API, detection, assignment/comments/audit (see the detailed entry above). CI: run
   33647596093, commit 77c5b8a.
-- **Slice 2 (incident lifecycle commands + API + optimistic concurrency + audit)** — `Not started`.
+- **Slice 2 (incident lifecycle commands + API + optimistic concurrency + audit)** — CI verified:
+  manual create + the six explicit command endpoints (acknowledge/investigate/mitigate/resolve/
+  close/severity), full state machine (INV-INC-002), optimistic concurrency via ETag/If-Match
+  (412/428, INV-INC-005/ADR-0028), RBAC (close = ADMIN/INCIDENT_MANAGER only), and an atomic
+  append-only `audit_entries` trail (INV-INC-007/ADR-0018) — see the detailed entry above. CI:
+  run 33655558580, commit d44d784.
 - **Slice 3 (assignment history + comments)** — `Not started`.
 - **Slice 4 (event-driven detection/correlation)** — `Not started` / **gated**: open correlation
   decisions (time-window length, failure-signature normalization, detection title/severity
