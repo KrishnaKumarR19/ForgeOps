@@ -36,3 +36,10 @@ forgeops:
   outbox:
     publisher:
       enabled: false
+  # Async event consumer (Phase 6 Slice 3): disable the @RabbitListener by default in tests so
+  # a live consumer never races assertions in unrelated context tests. The consumer integration
+  # tests re-enable it explicitly (forgeops.events.consumer.enabled=true). Shorten the retry
+  # backoff there so retry-exhaustion / dead-letter scenarios run quickly.
+  events:
+    consumer:
+      enabled: false

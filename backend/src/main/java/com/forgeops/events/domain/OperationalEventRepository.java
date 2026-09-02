@@ -29,4 +29,25 @@ public interface OperationalEventRepository {
      * the client (ADR-0025), so callers must pass the authenticated principal's id.
      */
     Optional<OperationalEvent> findByClientIdAndIdempotencyKey(UUID clientId, String idempotencyKey);
+
+    /**
+     * Atomically marks an event {@code PROCESSED}, but <em>only</em> if it is currently
+     * {@code RECEIVED} — the idempotency primitive for the asynchronous consumer (FR-RL-3,
+     * FR-RL-10, INV-MSG-003). This is a single conditional {@code UPDATE ... WHERE id = ? AND
+     * status = 'RECEIVED'}, so a check-then-update race cannot cause a duplicate effect:
+     * concurrent or duplicate deliveries either transition the row exactly once or observe it
+     * already {@code PROCESSED}.
+     *
+     * <p>PostgreSQL is authoritative for the processed state (INV-EVENT-003); no in-memory or
+     * broker-side deduplication is used. The caller must invoke this inside its transaction so
+     * the mark is committed before the message is acknowledged (INV-MSG-004).
+     *
+     * @param id the event's server-generated resource id (from the message body {@code
+     *           event_id})
+     * @return the {@link ProcessingOutcome}: {@code MARKED} when this call transitioned the row
+     *         {@code RECEIVED → PROCESSED}; {@code ALREADY_PROCESSED} when a row exists but was
+     *         already {@code PROCESSED} (a duplicate delivery — no additional effect);
+     *         {@code NOT_FOUND} when no such event exists
+     */
+    ProcessingOutcome markProcessed(UUID id);
 }

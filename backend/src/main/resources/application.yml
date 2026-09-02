@@ -65,6 +65,21 @@ forgeops:
       exchange: ${FORGEOPS_EVENTS_EXCHANGE:forgeops.events}
       queue: ${FORGEOPS_EVENTS_QUEUE:forgeops.events.processing}
       routing-key: ${FORGEOPS_EVENTS_ROUTING_KEY:operational-event.received}
+      # Dead-letter topology (Phase 6 Slice 3): messages a consumer rejects after its retries
+      # are exhausted are routed here by the broker (INV-MSG-006).
+      dead-letter-exchange: ${FORGEOPS_EVENTS_DLX:forgeops.events.dlx}
+      dead-letter-queue: ${FORGEOPS_EVENTS_DLQ:forgeops.events.processing.dlq}
+      dead-letter-routing-key: ${FORGEOPS_EVENTS_DLRK:operational-event.dead-letter}
+    # Asynchronous event consumer (Phase 6 Slice 3). Idempotent processing with explicit ack
+    # after the DB commit, bounded retry of transient failures, and dead-letter on exhaustion.
+    # Retry here is the CONSUMER policy, separate from the publisher backoff above.
+    consumer:
+      enabled: ${FORGEOPS_EVENTS_CONSUMER_ENABLED:true}
+      concurrency: ${FORGEOPS_EVENTS_CONSUMER_CONCURRENCY:1}
+      retry:
+        max-attempts: ${FORGEOPS_EVENTS_CONSUMER_RETRY_MAX_ATTEMPTS:3}
+        initial-delay: ${FORGEOPS_EVENTS_CONSUMER_RETRY_INITIAL_DELAY:PT2S}
+        max-delay: ${FORGEOPS_EVENTS_CONSUMER_RETRY_MAX_DELAY:PT30S}
 
 # Actuator: expose only the health endpoint in this phase. Prometheus, business metrics,
 # and detailed monitoring are deferred to later phases (ARCHITECTURE.md §4.4).

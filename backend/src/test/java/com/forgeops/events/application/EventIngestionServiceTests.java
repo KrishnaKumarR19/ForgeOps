@@ -74,6 +74,14 @@ class EventIngestionServiceTests {
             UUID id = keyIndex.get(clientId + "|" + key);
             return id == null ? Optional.empty() : findById(id);
         }
+
+        @Override
+        public com.forgeops.events.domain.ProcessingOutcome markProcessed(UUID id) {
+            // Not exercised by ingestion tests; a minimal correct implementation for the port.
+            return findById(id).isPresent()
+                    ? com.forgeops.events.domain.ProcessingOutcome.MARKED
+                    : com.forgeops.events.domain.ProcessingOutcome.NOT_FOUND;
+        }
     }
 
     private static final UUID SERVICE_ID = UUID.fromString("018f1000-0000-7000-8000-000000000001");

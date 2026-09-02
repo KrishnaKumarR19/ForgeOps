@@ -3,6 +3,7 @@ package com.forgeops.events.infrastructure;
 import com.forgeops.events.domain.DuplicateIdempotencyKeyException;
 import com.forgeops.events.domain.OperationalEvent;
 import com.forgeops.events.domain.OperationalEventRepository;
+import com.forgeops.events.domain.ProcessingOutcome;
 import java.util.Optional;
 import java.util.UUID;
 import org.springframework.dao.DataIntegrityViolationException;
@@ -60,6 +61,19 @@ class JpaOperationalEventRepository implements OperationalEventRepository {
             return Optional.empty();
         }
         return jpa.findByClientIdAndIdempotencyKey(clientId, idempotencyKey).map(this::toDomain);
+    }
+
+    @Override
+    public ProcessingOutcome markProcessed(UUID id) {
+        // Single atomic conditional UPDATE (WHERE status='RECEIVED'): if it changed a row, this
+        // delivery performed the effect; otherwise the row is either already PROCESSED (a
+        // duplicate delivery) or absent. Distinguishing those two only matters for the
+        // outcome/logging, so the existence check runs solely on the zero-rows path.
+        int updated = jpa.markProcessed(id);
+        if (updated == 1) {
+            return ProcessingOutcome.MARKED;
+        }
+        return jpa.existsById(id) ? ProcessingOutcome.ALREADY_PROCESSED : ProcessingOutcome.NOT_FOUND;
     }
 
     private static OperationalEventEntity toEntity(OperationalEvent e) {
