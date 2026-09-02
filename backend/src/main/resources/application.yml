@@ -52,11 +52,14 @@ server:
 forgeops:
   outbox:
     publisher:
-      poll-delay: ${FORGEOPS_OUTBOX_POLL_DELAY:5s}
+      # ISO-8601 durations (PT5S = 5 seconds). @Scheduled's fixedDelayString and Boot's
+      # Duration binding both accept this format; the plain "5s" form is NOT accepted by
+      # @Scheduled.
+      poll-delay: ${FORGEOPS_OUTBOX_POLL_DELAY:PT5S}
       batch-size: ${FORGEOPS_OUTBOX_BATCH_SIZE:100}
       backoff:
-        base-delay: ${FORGEOPS_OUTBOX_BACKOFF_BASE:5s}
-        max-delay: ${FORGEOPS_OUTBOX_BACKOFF_MAX:5m}
+        base-delay: ${FORGEOPS_OUTBOX_BACKOFF_BASE:PT5S}
+        max-delay: ${FORGEOPS_OUTBOX_BACKOFF_MAX:PT5M}
   events:
     rabbitmq:
       exchange: ${FORGEOPS_EVENTS_EXCHANGE:forgeops.events}

@@ -31,7 +31,7 @@ import org.springframework.jdbc.core.JdbcTemplate;
  */
 @SpringBootTest(properties = {
         "forgeops.security.bootstrap-admin.enabled=false",
-        "forgeops.outbox.publisher.poll-delay=1h" // don't let the scheduler race the test
+        "forgeops.outbox.publisher.poll-delay=PT1H" // scheduler disabled in tests anyway
 })
 @Import({PostgresTestContainer.class, RabbitMqTestContainer.class})
 class OutboxPublisherIntegrationTests {

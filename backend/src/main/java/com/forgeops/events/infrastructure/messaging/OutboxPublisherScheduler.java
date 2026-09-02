@@ -32,7 +32,7 @@ class OutboxPublisherScheduler {
         this.publishService = publishService;
     }
 
-    @Scheduled(fixedDelayString = "${forgeops.outbox.publisher.poll-delay:5s}")
+    @Scheduled(fixedDelayString = "${forgeops.outbox.publisher.poll-delay:PT5S}")
     void pollAndPublish() {
         try {
             publishService.publishBatch();

@@ -39,7 +39,7 @@ import org.springframework.transaction.support.TransactionTemplate;
  */
 @SpringBootTest(properties = {
         "forgeops.security.bootstrap-admin.enabled=false",
-        "forgeops.outbox.publisher.poll-delay=1h"
+        "forgeops.outbox.publisher.poll-delay=PT1H"
 })
 @Import({PostgresTestContainer.class, OutboxPublisherFailureIntegrationTests.FailingBrokerConfig.class})
 class OutboxPublisherFailureIntegrationTests {
