@@ -56,8 +56,15 @@ class RabbitMessageBroker implements MessageBroker {
                 throw new MessagePublishException(
                         "Broker did not confirm acceptance for outbox message " + message.id());
             }
+        } catch (MessagePublishException e) {
+            throw e;
         } catch (AmqpException e) {
             // Connection/channel failure, broker unavailable, serialization, etc.
+            throw new MessagePublishException(
+                    "Failed to publish outbox message " + message.id(), e);
+        } catch (RuntimeException e) {
+            // Any other publish-path failure (e.g. confirm/channel state) is treated as a
+            // retryable publish failure rather than escaping as an unhandled error.
             throw new MessagePublishException(
                     "Failed to publish outbox message " + message.id(), e);
         }

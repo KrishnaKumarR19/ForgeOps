@@ -5,6 +5,13 @@
 # supplied via the environment / secret store (forgeops.security.jwt.private-key /
 # public-key) and are never committed.
 
+spring:
+  # Enable publisher confirms in tests so RabbitTemplate.waitForConfirms works against the
+  # Testcontainers RabbitMQ (matches the production default in application.yml). Host/port/
+  # credentials are supplied by @ServiceConnection; this only sets the confirm mode.
+  rabbitmq:
+    publisher-confirm-type: simple
+
 forgeops:
   security:
     jwt:
