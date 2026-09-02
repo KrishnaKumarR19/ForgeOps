@@ -170,8 +170,10 @@ role-based access.
   locally by the Docker Engine 29 limitation**; not executed locally. **NOT in this slice:**
   RabbitMQ, publisher/polling, `FOR UPDATE SKIP LOCKED` claiming, PUBLISHED transitions,
   retry/backoff, acknowledgement, dead-letter, consumers, async workers, incidents, Redis,
-  SSE, frontend, AI. **Status: YELLOW — implementation complete, authoritative CI/integration
-  verification pending.**
+  SSE, frontend, AI. **Status: GREEN — verified by GitHub Actions CI (run 33608264723, commit
+  cdeaa15): `./mvnw -B clean verify` succeeded on ubuntu-latest with native Docker, running the
+  full unit + architecture + module-boundary + Testcontainers PostgreSQL suite (incl. the
+  atomic event+outbox and rollback integration tests) with no exclusions.**
 - **Phase 5 — Slice 1: event ingestion core (Done — CI verified):** the synchronous
   authenticated-submit → validate → idempotency → persist path for operational events
   (FR-EV-1..4, API_CONTRACTS §6/§7, PERSISTENCE_MODEL §5/§6/§16/§17, ADR-0016/0023/0024/0025).
