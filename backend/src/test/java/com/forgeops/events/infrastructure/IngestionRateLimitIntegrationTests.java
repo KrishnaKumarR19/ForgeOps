@@ -57,10 +57,6 @@ class IngestionRateLimitIntegrationTests {
     private UserProvisioningService provisioning;
     @Autowired
     private JdbcTemplate jdbcTemplate;
-    @Autowired
-    private com.forgeops.events.application.RateLimitProperties rateLimitProperties;
-    @Autowired
-    private org.springframework.context.ApplicationContext applicationContext;
 
     private TestRestTemplate rest;
 
@@ -104,36 +100,6 @@ class IngestionRateLimitIntegrationTests {
         return jdbcTemplate.queryForObject("SELECT COUNT(*) FROM outbox_messages", Long.class);
     }
 
-    // TEMPORARY line-discriminating diagnostics (CI job logs/artifacts are inaccessible in this
-    // environment; only the failing assertion's file:line reaches us via check-run annotations).
-    // Each hypothesis is asserted on its OWN line so the failing line pinpoints the root cause:
-    //   - DIAG-A (limit binding) fails  => property binding is the cause
-    //   - DIAG-B (web-config bean) fails => interceptor/configurer wiring is the cause
-    //   - DIAG-C (limiter bean) fails    => limiter bean is missing
-    //   - DIAG-D (direct limiter decision) fails => limiter logic in this context is the cause
-    //   - only the HTTP 429 assertion fails => interceptor not applied OR principal not keyed
-    @Test
-    void diagnosticEffectiveLimitIsTwo() {
-        assertThat(rateLimitProperties.limit()).isEqualTo(2); // DIAG-A
-    }
-
-    @Test
-    void diagnosticRateLimitWebConfigBeanIsPresent() {
-        assertThat(applicationContext.getBeansOfType(RateLimitWebConfig.class)).isNotEmpty(); // DIAG-B
-    }
-
-    @Test
-    void diagnosticRateLimiterBeanIsPresentAndEnforcesLimit() {
-        var limiters = applicationContext.getBeansOfType(com.forgeops.events.application.RateLimiter.class);
-        assertThat(limiters).isNotEmpty(); // DIAG-C
-        com.forgeops.events.application.RateLimiter limiter = limiters.values().iterator().next();
-        String key = java.util.UUID.randomUUID().toString();
-        assertThat(limiter.tryConsume(key).allowed()).isTrue();
-        assertThat(limiter.tryConsume(key).allowed()).isTrue();
-        assertThat(limiter.tryConsume(key).allowed()).isFalse(); // DIAG-D
-    }
-
-    @org.junit.jupiter.api.Disabled("TEMP: isolating CI root cause — re-enabled with the fix")
     @Test
     void rateLimitedRequestIsRejectedBeforePersistence() {
         provisioning.provision("eng", PASSWORD, EnumSet.of(Role.ENGINEER));
@@ -147,7 +113,7 @@ class IngestionRateLimitIntegrationTests {
 
         // The third exceeds the limit → 429 with Retry-After, and NOTHING is persisted for it.
         ResponseEntity<String> limited = submit(token, 3);
-        assertThat(limited.getStatusCode()).isEqualTo(HttpStatus.TOO_MANY_REQUESTS); // HTTP-429
+        assertThat(limited.getStatusCode()).isEqualTo(HttpStatus.TOO_MANY_REQUESTS);
         assertThat(limited.getHeaders().getContentType()).isEqualTo(MediaType.APPLICATION_PROBLEM_JSON);
         assertThat(limited.getHeaders().getFirst("Retry-After")).isNotBlank();
 
@@ -157,7 +123,6 @@ class IngestionRateLimitIntegrationTests {
         assertThat(outboxCount()).isEqualTo(2);
     }
 
-    @org.junit.jupiter.api.Disabled("TEMP: isolating CI root cause — re-enabled with the fix")
     @Test
     void acceptedRequestsRetainIdempotencyAndOutboxBehavior() {
         provisioning.provision("eng", PASSWORD, EnumSet.of(Role.ENGINEER));
