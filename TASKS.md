@@ -174,8 +174,17 @@ role-based access.
   management (CRUD) APIs remain deferred** to a later ADMIN slice (API_CONTRACTS §5), a
   separate capability from the tables/FK/seed. **NOT in this slice:** transactional outbox,
   RabbitMQ, async consumers, incident detection/correlation, Redis, SSE, AI, frontend, rate
-  limiting, service/environment CRUD. **Status: YELLOW — implementation complete,
-  authoritative CI/integration verification pending.**
+  limiting, service/environment CRUD. **Two real-DB defects were found and fixed during the
+  CI verification gate:** (1) `received_at` was truncated to microseconds so the acceptance
+  response is byte-identical to the value PostgreSQL stores and returns on an idempotent
+  replay (a nanosecond JVM instant was otherwise rounded on storage); (2) the insert now runs
+  in its own transaction (`TransactionTemplate`) so a unique-constraint violation on a
+  concurrent duplicate rolls back in isolation and the recovery re-read runs in a fresh
+  transaction — a same-transaction re-read would have failed with "current transaction is
+  aborted". **Status: GREEN — verified by GitHub Actions CI (run 33604660966, commit
+  ccc5035): `./mvnw -B clean verify` succeeded on ubuntu-latest with native Docker, running
+  the full unit + architecture + module-boundary + Testcontainers PostgreSQL suite with no
+  exclusions.**
 - **Phase 4.2 — Slice 5: role-based authorization + 401/403 boundary (In progress):**
   the authorization foundation on top of Slice 4 authentication — **authorization only**
   (SECURITY_DESIGN §14/§15, API_CONTRACTS §4). Roles are mapped to Spring authorities in
