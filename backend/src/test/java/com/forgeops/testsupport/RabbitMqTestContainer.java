@@ -18,8 +18,6 @@ public class RabbitMqTestContainer {
     @Bean
     @ServiceConnection
     RabbitMQContainer rabbitMqContainer() {
-        // 3.12 line is the version validated against the Testcontainers 1.19.8 RabbitMQContainer
-        // wait strategy (managed by the Boot BOM); newer tags have shown startup-wait flakiness.
-        return new RabbitMQContainer(DockerImageName.parse("rabbitmq:3.12-management-alpine"));
+        return new RabbitMQContainer(DockerImageName.parse("rabbitmq:3.13-management-alpine"));
     }
 }

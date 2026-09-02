@@ -20,6 +20,8 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 
 /**
  * Outbox publisher integration tests against real PostgreSQL <strong>and</strong> real
@@ -46,6 +48,8 @@ class OutboxPublisherIntegrationTests {
     private RabbitTemplate rabbitTemplate;
     @Autowired
     private OutboxPublisherProperties properties;
+    @Autowired
+    private PlatformTransactionManager transactionManager;
 
     private static final String QUEUE = "forgeops.events.processing";
 
@@ -144,8 +148,12 @@ class OutboxPublisherIntegrationTests {
                 + "WHERE id = ?::uuid", id.toString());
 
         // A subsequent markPublished with a new time must NOT change the already-published row.
+        // markPublished is a @Modifying JPA update; production runs it inside the publisher's
+        // TransactionTemplate, so exercise it the same way here (a bare call has no active
+        // transaction and JPA would reject the update).
         Instant staleTime = Instant.parse("2000-01-01T00:00:00Z").truncatedTo(ChronoUnit.MICROS);
-        outbox.markPublished(id, staleTime);
+        new TransactionTemplate(transactionManager)
+                .executeWithoutResult(status -> outbox.markPublished(id, staleTime));
 
         Instant publishedAt = jdbcTemplate.queryForObject(
                 "SELECT published_at FROM outbox_messages WHERE id = ?::uuid", Instant.class, id.toString());

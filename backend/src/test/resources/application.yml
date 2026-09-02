@@ -12,6 +12,15 @@ spring:
   rabbitmq:
     publisher-confirm-type: simple
 
+# Test-only: the RabbitMQ health contributor (added with spring-boot-starter-amqp) would make
+# /actuator/health report DOWN in tests that start the context without a broker (e.g.
+# HealthEndpointTests uses PostgreSQL only). Disabling it HERE keeps that test focused on
+# datasource + Flyway health. Production keeps RabbitMQ health enabled (application.yml).
+management:
+  health:
+    rabbit:
+      enabled: false
+
 forgeops:
   security:
     jwt:

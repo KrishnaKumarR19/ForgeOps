@@ -41,23 +41,6 @@ jobs:
         # tests all run. Any failure fails the workflow. No H2 fallback, no skipped tests.
         run: ./mvnw -B clean verify
 
-      # TEMPORARY diagnostic (Phase 6 Slice 2 CI root-cause gate): on failure only, surface
-      # the actual failing test name and root exception as GitHub error annotations so they
-      # are retrievable via the check-runs annotations API. This changes NO test/production
-      # behaviour and will be removed once the root cause is identified.
-      - name: Surface Surefire failures as annotations (temporary diagnostic)
-        if: failure()
-        working-directory: backend
-        run: |
-          shopt -s nullglob
-          for f in target/surefire-reports/*.txt; do
-            if grep -Eq "<<< (FAILURE|ERROR)|Tests run:.*(Failures: [1-9]|Errors: [1-9])" "$f"; then
-              # First ~40 lines contain the failing method + exception + top stack frames.
-              detail=$(head -n 40 "$f" | tr '\n' '|' | tr -d '\r' | cut -c1-1200)
-              echo "::error title=SUREFIRE $(basename "$f")::${detail}"
-            fi
-          done
-
       - name: Upload Surefire reports on failure
         if: failure()
         uses: actions/upload-artifact@v4
