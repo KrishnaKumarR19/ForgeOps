@@ -1,6 +1,6 @@
 # ForgeOps — Delivery Phases & Milestones
 
-Status: Implementation in progress — Phase 5 (Event Ingestion, FR-EV-1..4) complete/CI-verified; Phase 6 (Async Event Processing) complete/CI-verified (Slices 1–4: transactional outbox, publisher→RabbitMQ, idempotent consumer, retention cleanup); Phase 7 (Incident Domain) not started
+Status: Implementation in progress — Phase 5 (Event Ingestion, FR-EV-1..4) complete/CI-verified; Phase 6 (Async Event Processing) complete/CI-verified (Slices 1–4: transactional outbox, publisher→RabbitMQ, idempotent consumer, retention cleanup); Phase 7 (Incident Domain) in progress — Slice 1 (incident persistence foundation) CI-verified; Slices 2–4 not started (Slice 4 detection gated on open correlation decisions)
 Related: [PRD.md](./PRD.md) · [ARCHITECTURE.md](./ARCHITECTURE.md) · [DECISIONS.md](./DECISIONS.md) · [ENGINEERING_CONSTITUTION.md](./ENGINEERING_CONSTITUTION.md)
 
 > This is a **high-level roadmap of phases and milestones only** — not a detailed task
@@ -138,6 +138,37 @@ role-based access.
   Security Crypto `Argon2PasswordEncoder` + Bouncy Castle) behind the existing
   `PasswordHash` boundary, with the SECURITY_DESIGN §5 baseline parameters (ADR-0031).
   6 focused unit tests; verified locally.
+- **Phase 7 — Slice 1: incident persistence + aggregate foundation (Done):** establishes the
+  persisted `Incident` aggregate and its DB foundation (DOMAIN_MODEL §2/§10, PERSISTENCE_MODEL
+  §8/§9/§16/§19, INV-INC-001/004/005). New `incidents.domain`: framework-free `Incident`
+  aggregate (id, title, service_id, environment_id, failure_signature, severity, state,
+  current_assignee_id, version, created_at, resolved_at, closed_at) with an `open(...)` factory
+  (state=OPEN, version=0) + full rehydration constructor enforcing the foundation invariants
+  (required id/service/environment/severity/state, non-negative version, immutable identity, no
+  hard delete); `IncidentState` (OPEN/ACKNOWLEDGED/INVESTIGATING/MITIGATED/RESOLVED/CLOSED — no
+  CANCELLED) and `IncidentSeverity` (INFO/WARNING/MINOR/MAJOR/CRITICAL) enums; `IncidentRepository`
+  port (`save`/`findById` only — no speculative methods). New Flyway `V4__incidents.sql`: the
+  `incidents` table with FKs to `services`/`environments`/`users` (nullable assignee),
+  `ck_incidents_severity`/`ck_incidents_state` CHECKs, `ck_incidents_version_non_negative`, and
+  the §16 indexes (`state`; `(service_id, environment_id, created_at)`; `(severity, state)`;
+  `(current_assignee_id)` partial where assigned); plus the FK
+  `operational_events.incident_id → incidents(id)` intentionally deferred from V2 (added via
+  `ALTER TABLE`, no `ON DELETE` cascade — incidents are never hard-deleted, §19). V1/V2/V3
+  unchanged. New `incidents.infrastructure`: `IncidentEntity` (`version` mapped as a plain column,
+  **not** JPA `@Version` — command-side optimistic locking/ETag/If-Match is Slice 2),
+  package-private Spring Data repo, and `JpaIncidentRepository` adapter (framework-free domain
+  boundary preserved). **Scope: persistence + aggregate foundation ONLY** — no lifecycle commands,
+  no REST API, no detection/correlation, no assignment/comments/audit tables, no ETag/If-Match, no
+  Phase 6 semantic changes. Non-container suite **154/154** locally incl. architecture +
+  module-boundary tests (9 new `IncidentTests`; incidents.domain stays framework-free and does not
+  depend on events). Testcontainers PostgreSQL `IncidentPersistenceIntegrationTests` (V4 applies on
+  V1–V3; round-trip; nullable assignee/timestamps; service/environment/assignee FK enforcement;
+  invalid state/severity/negative-version rejected by DB CHECKs; `operational_events.incident_id`
+  FK accepts a real incident and rejects an unknown one; §16 indexes present; re-save by PK neither
+  deletes nor duplicates) is **blocked locally by the Docker Engine 29 limitation**; executed on CI.
+  **Status: GREEN — verified by GitHub Actions CI (run 33647596093, commit 77c5b8a): `./mvnw -B
+  clean verify` succeeded on ubuntu-latest with native Docker, full unit + architecture +
+  module-boundary + Testcontainers PostgreSQL & RabbitMQ suite with no exclusions.**
 - **Phase 6 — Slice 4: outbox retention cleanup (Done):** the closing Phase 6 item — prune old
   `PUBLISHED` outbox rows so the append-heavy `outbox_messages` table stays bounded
   (PERSISTENCE_MODEL §15, ADR-0019, INV-OUTBOX-006). New framework-free
@@ -522,9 +553,22 @@ that process under at-least-once delivery with explicit acknowledgement.
   and [ADR-0014](./DECISIONS.md#adr-0014--at-least-once-delivery-with-idempotent-consumers)).
   **Phase 6 complete — CI verified (run 33644108557, commit fb4660c).**
 
-### Phase 7 — Incident Domain — `Not started`
+### Phase 7 — Incident Domain — `In progress`
 Implement incident lifecycle state machine, severity, assignment, notes, resolution,
-audit, and event-driven detection/correlation.
+audit, and event-driven detection/correlation. Sliced per the approved reconnaissance
+(manual domain first; detection is gated on open correlation decisions).
+- **Slice 1 (incident persistence + aggregate foundation)** — CI verified: framework-free
+  `Incident` aggregate + `IncidentState`/`IncidentSeverity` enums + `IncidentRepository` port;
+  `V4__incidents.sql` (incidents table with service/environment/assignee FKs, severity/state
+  CHECK, `version >= 0`, the §16 indexes) and the deferred `operational_events.incident_id →
+  incidents(id)` FK; JPA entity/adapter. Persistence foundation only — no lifecycle commands,
+  API, detection, assignment/comments/audit (see the detailed entry above). CI: run
+  33647596093, commit 77c5b8a.
+- **Slice 2 (incident lifecycle commands + API + optimistic concurrency + audit)** — `Not started`.
+- **Slice 3 (assignment history + comments)** — `Not started`.
+- **Slice 4 (event-driven detection/correlation)** — `Not started` / **gated**: open correlation
+  decisions (time-window length, failure-signature normalization, detection title/severity
+  generation, one-active-incident safeguard) must be resolved first.
 - **Milestone:** Incidents are created (including via detection), managed, and audited
   (FR-IN-*).
 
