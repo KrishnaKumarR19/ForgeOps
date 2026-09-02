@@ -8,6 +8,7 @@ import com.forgeops.events.domain.OutboxMessageRepository;
 import com.forgeops.events.domain.OutboxStatus;
 import com.forgeops.testsupport.PostgresTestContainer;
 import java.sql.Timestamp;
+import java.time.Clock;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
@@ -45,6 +46,11 @@ class OutboxRetentionCleanupIntegrationTests {
     private JdbcTemplate jdbcTemplate;
     @Autowired
     private PlatformTransactionManager transactionManager;
+    // The production Clock bean (Clock.systemUTC) — the SAME clock OutboxCleanupService uses.
+    // Tests that drive the service (which computes cutoff = now - retention from this clock)
+    // must position fixture timestamps relative to it, not to an unrelated fixed instant.
+    @Autowired
+    private Clock clock;
 
     private final Instant now = Instant.parse("2026-03-10T00:00:00Z");
     private final Instant cutoff = now.minus(Duration.ofHours(168)); // 7-day retention window
@@ -192,12 +198,18 @@ class OutboxRetentionCleanupIntegrationTests {
 
     @Test
     void handlesMoreThanOneBatchViaService() {
-        // 1200 eligible old-published rows; service default batch (500) → 3 batches (500,500,200).
+        // This test drives the real OutboxCleanupService, which computes its cutoff from the
+        // injected (system) Clock — NOT from this test's fixed `now`. Position the fixture
+        // relative to that same clock so eligibility is deterministic on any calendar date.
+        Instant realNow = clock.instant();
+        // 1200 eligible old-published rows (well older than the 7-day window); service default
+        // batch (500) → 3 batches (500, 500, 200) → 1200 deleted.
         for (int i = 1; i <= 1200; i++) {
-            insertPublished(id(String.valueOf(1000 + i)), now.minus(Duration.ofDays(10)));
+            insertPublished(id(String.valueOf(1000 + i)), realNow.minus(Duration.ofDays(30)));
         }
-        // Also a couple of retained rows to prove they survive.
-        insertPublished(id("1"), now.minus(Duration.ofDays(1)));
+        // Retained rows that must survive: a recently-published row (inside the window) and a
+        // PENDING row (never eligible).
+        insertPublished(id("1"), realNow.minus(Duration.ofHours(1)));
         insertPending(id("2"), 0, null);
 
         int deleted = cleanupService.cleanupOnce();
@@ -252,7 +264,8 @@ class OutboxRetentionCleanupIntegrationTests {
         // one the publisher would claim — is left intact (INV-OUTBOX-003).
         UUID publishedOld = id("14");
         UUID pendingOld = id("15");
-        insertPublished(publishedOld, now.minus(Duration.ofDays(10)));
+        // Driven via the real service clock, so position the eligible row relative to it.
+        insertPublished(publishedOld, clock.instant().minus(Duration.ofDays(30)));
         insertPending(pendingOld, 0, null);
 
         int deleted = cleanupService.cleanupOnce();
