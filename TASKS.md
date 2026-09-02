@@ -1,6 +1,6 @@
 # ForgeOps — Delivery Phases & Milestones
 
-Status: Foundation complete; implementation not started
+Status: Implementation in progress — Phase 5 (Event Ingestion, FR-EV-1..4) complete/CI-verified; Phase 6 not started
 Related: [PRD.md](./PRD.md) · [ARCHITECTURE.md](./ARCHITECTURE.md) · [DECISIONS.md](./DECISIONS.md) · [ENGINEERING_CONSTITUTION.md](./ENGINEERING_CONSTITUTION.md)
 
 > This is a **high-level roadmap of phases and milestones only** — not a detailed task
@@ -138,7 +138,7 @@ role-based access.
   Security Crypto `Argon2PasswordEncoder` + Bouncy Castle) behind the existing
   `PasswordHash` boundary, with the SECURITY_DESIGN §5 baseline parameters (ADR-0031).
   6 focused unit tests; verified locally.
-- **Phase 5 — Slice 1: event ingestion core (In progress):** the synchronous
+- **Phase 5 — Slice 1: event ingestion core (Done — CI verified):** the synchronous
   authenticated-submit → validate → idempotency → persist path for operational events
   (FR-EV-1..4, API_CONTRACTS §6/§7, PERSISTENCE_MODEL §5/§6/§16/§17, ADR-0016/0023/0024/0025).
   New `events` module (`domain`/`application`/`infrastructure`/`api`) mirroring the identity
@@ -327,10 +327,19 @@ role-based access.
 - **Milestone (implementation):** Authenticated, authorized access works end to end
   (FR-ID-*). Authentication, JWT, authorization, and HTTP endpoints remain **not started**.
 
-### Phase 5 — Event Ingestion — `Not started`
+### Phase 5 — Event Ingestion — `Done`
 Implement the event ingestion API with validation, persistence, and idempotency.
 - **Milestone:** Authenticated clients can submit and durably persist validated,
-  de-duplicated events (FR-EV-1..4).
+  de-duplicated events (FR-EV-1..4). **Met.** Delivered by Phase 5 Slice 1 (event ingestion
+  core; see the detailed entry above). FR-EV-1..4 are all implemented: authenticated
+  submission (ADMIN/ENGINEER/INCIDENT_MANAGER; VIEWER 403), validation before acceptance
+  (400 syntactic, 422 unknown service/environment reference), durable PostgreSQL persistence
+  with server-generated UUID v7 ids, and producer-scoped idempotency (canonical `payload_hash`;
+  same-key/same-payload replay → 202, same-key/different-payload conflict → 409; DB
+  `(client_id, idempotency_key)` uniqueness authoritative incl. concurrent-duplicate safety).
+  **Verified by GitHub Actions CI: run 33604660966, commit `ccc5035`, `./mvnw -B clean verify`
+  SUCCESS on native Linux Docker/Testcontainers PostgreSQL, no exclusions.** FR-EV-5
+  (asynchronous processing) is **not** part of this milestone — it belongs to Phase 6.
 
 ### Phase 6 — Async Event Processing — `Not started`
 Implement the **transactional outbox** (event + outbox record committed in one
