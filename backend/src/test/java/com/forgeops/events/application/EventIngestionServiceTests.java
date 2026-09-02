@@ -11,6 +11,8 @@ import com.forgeops.events.domain.EventSeverity;
 import com.forgeops.events.domain.EventStatus;
 import com.forgeops.events.domain.OperationalEvent;
 import com.forgeops.events.domain.OperationalEventRepository;
+import com.forgeops.events.domain.OutboxMessage;
+import com.forgeops.events.domain.OutboxMessageRepository;
 import com.forgeops.events.domain.ReferenceDataRepository;
 import java.time.Clock;
 import java.time.Instant;
@@ -108,13 +110,27 @@ class EventIngestionServiceTests {
         }
     };
 
+    /** In-memory outbox repository counting saved messages. */
+    private static class InMemoryOutbox implements OutboxMessageRepository {
+        final List<OutboxMessage> stored = new ArrayList<>();
+
+        @Override
+        public OutboxMessage save(OutboxMessage message) {
+            stored.add(message);
+            return message;
+        }
+    }
+
     private final InMemoryEvents repo = new InMemoryEvents();
+    private final InMemoryOutbox outboxRepo = new InMemoryOutbox();
     private final AtomicInteger idSeq = new AtomicInteger();
     private final IdGenerator idGenerator = () ->
             UUID.fromString("018f0000-0000-7000-8000-%012d".formatted(idSeq.incrementAndGet()));
+    private final OutboxMessageFactory outboxFactory =
+            new OutboxMessageFactory(idGenerator, new ObjectMapper());
     private final EventIngestionService service = new EventIngestionService(
-            repo, REFERENCE_DATA, new PayloadCanonicalizer(), idGenerator,
-            Clock.fixed(now, ZoneOffset.UTC), TX_MANAGER);
+            repo, outboxRepo, outboxFactory, REFERENCE_DATA, new PayloadCanonicalizer(),
+            idGenerator, Clock.fixed(now, ZoneOffset.UTC), TX_MANAGER);
 
     private JsonNode payload(String raw) throws Exception {
         return mapper.readTree(raw);
@@ -208,8 +224,8 @@ class EventIngestionServiceTests {
             }
         };
         EventIngestionService racing = new EventIngestionService(
-                racingRepo, REFERENCE_DATA, new PayloadCanonicalizer(), idGenerator,
-                Clock.fixed(now, ZoneOffset.UTC), TX_MANAGER);
+                racingRepo, new InMemoryOutbox(), outboxFactory, REFERENCE_DATA,
+                new PayloadCanonicalizer(), idGenerator, Clock.fixed(now, ZoneOffset.UTC), TX_MANAGER);
 
         AcceptedEvent result = racing.ingest(command(ALICE, "key-1", "{\"a\":1}"));
 
@@ -238,8 +254,8 @@ class EventIngestionServiceTests {
             }
         };
         EventIngestionService racing = new EventIngestionService(
-                racingRepo, REFERENCE_DATA, new PayloadCanonicalizer(), idGenerator,
-                Clock.fixed(now, ZoneOffset.UTC), TX_MANAGER);
+                racingRepo, new InMemoryOutbox(), outboxFactory, REFERENCE_DATA,
+                new PayloadCanonicalizer(), idGenerator, Clock.fixed(now, ZoneOffset.UTC), TX_MANAGER);
 
         assertThatThrownBy(() -> racing.ingest(command(ALICE, "key-1", "{\"a\":1}")))
                 .isInstanceOf(IdempotencyConflictException.class);
@@ -280,5 +296,51 @@ class EventIngestionServiceTests {
         assertThatThrownBy(() -> service.ingest(cmd))
                 .isInstanceOf(UnknownReferenceException.class);
         assertThat(repo.stored).isEmpty();
+    }
+
+    // ----- outbox interaction (Phase 6 Slice 1) --------------------------------
+
+    @Test
+    void newEventCreatesExactlyOneOutboxMessageReferencingTheEvent() throws Exception {
+        AcceptedEvent result = service.ingest(command(ALICE, "key-1", "{\"a\":1}"));
+
+        assertThat(outboxRepo.stored).hasSize(1);
+        OutboxMessage message = outboxRepo.stored.get(0);
+        assertThat(message.aggregateId()).isEqualTo(result.event().id());
+        assertThat(message.aggregateType()).isEqualTo(OutboxMessageFactory.AGGREGATE_TYPE);
+        assertThat(message.messageType()).isEqualTo(OutboxMessageFactory.MESSAGE_TYPE);
+        assertThat(message.status().name()).isEqualTo("PENDING");
+        assertThat(message.attempts()).isZero();
+        assertThat(message.createdAt()).isEqualTo(result.event().receivedAt());
+        assertThat(message.publishedAt()).isNull();
+        assertThat(message.nextAttemptAt()).isNull();
+        assertThat(message.lastError()).isNull();
+    }
+
+    @Test
+    void replayDoesNotCreateAnotherOutboxMessage() throws Exception {
+        service.ingest(command(ALICE, "key-1", "{\"a\":1,\"b\":2}"));
+        service.ingest(command(ALICE, "key-1", "{\"b\":2,\"a\":1}")); // same payload, replay
+
+        assertThat(repo.stored).hasSize(1);
+        assertThat(outboxRepo.stored).hasSize(1); // no second outbox message
+    }
+
+    @Test
+    void conflictDoesNotCreateAnOutboxMessage() throws Exception {
+        service.ingest(command(ALICE, "key-1", "{\"a\":1}"));
+
+        assertThatThrownBy(() -> service.ingest(command(ALICE, "key-1", "{\"a\":999}")))
+                .isInstanceOf(IdempotencyConflictException.class);
+        assertThat(outboxRepo.stored).hasSize(1); // only the first event's message
+    }
+
+    @Test
+    void submissionWithoutKeyCreatesOneOutboxMessagePerEvent() throws Exception {
+        service.ingest(command(ALICE, null, "{\"a\":1}"));
+        service.ingest(command(ALICE, null, "{\"a\":1}"));
+
+        assertThat(repo.stored).hasSize(2);
+        assertThat(outboxRepo.stored).hasSize(2); // one per accepted event
     }
 }

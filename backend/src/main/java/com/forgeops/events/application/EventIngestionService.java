@@ -4,6 +4,7 @@ import com.forgeops.common.id.IdGenerator;
 import com.forgeops.events.domain.DuplicateIdempotencyKeyException;
 import com.forgeops.events.domain.OperationalEvent;
 import com.forgeops.events.domain.OperationalEventRepository;
+import com.forgeops.events.domain.OutboxMessageRepository;
 import com.forgeops.events.domain.ReferenceDataRepository;
 import java.time.Clock;
 import java.time.Instant;
@@ -39,11 +40,21 @@ import org.springframework.transaction.support.TransactionTemplate;
  * that slips past it is caught as {@link DuplicateIdempotencyKeyException} on save, after
  * which the winning event is re-read and the same replay-vs-conflict rule is applied. Two
  * concurrent identical requests therefore yield exactly one accepted event.
+ *
+ * <p>Atomic event + outbox (Phase 6 Slice 1, INV-OUTBOX-001, INV-EVENT-006, ADR-0013): the
+ * new-event path writes the event and exactly one {@code PENDING} outbox message inside a
+ * single {@link TransactionTemplate} transaction — both commit or both roll back, so a durable
+ * accepted event always has its outbox record and a failure leaves neither. The transaction is
+ * isolated so a {@code (client_id, idempotency_key)} unique-violation rollback does not poison
+ * the recovery re-read, which runs in a fresh transaction. Replay and conflict paths never
+ * create an outbox message. No publishing happens here — that is a later slice.
  */
 @Service
 public class EventIngestionService {
 
     private final OperationalEventRepository events;
+    private final OutboxMessageRepository outbox;
+    private final OutboxMessageFactory outboxMessageFactory;
     private final ReferenceDataRepository referenceData;
     private final PayloadCanonicalizer canonicalizer;
     private final IdGenerator idGenerator;
@@ -51,12 +62,16 @@ public class EventIngestionService {
     private final TransactionTemplate transactionTemplate;
 
     public EventIngestionService(OperationalEventRepository events,
+                                 OutboxMessageRepository outbox,
+                                 OutboxMessageFactory outboxMessageFactory,
                                  ReferenceDataRepository referenceData,
                                  PayloadCanonicalizer canonicalizer,
                                  IdGenerator idGenerator,
                                  Clock clock,
                                  PlatformTransactionManager transactionManager) {
         this.events = events;
+        this.outbox = outbox;
+        this.outboxMessageFactory = outboxMessageFactory;
         this.referenceData = referenceData;
         this.canonicalizer = canonicalizer;
         this.idGenerator = idGenerator;
@@ -88,9 +103,18 @@ public class EventIngestionService {
 
         OperationalEvent toCreate = build(command, serviceId, environmentId, canonicalPayload, payloadHash);
         try {
-            // Insert in its own transaction so a unique-violation rollback is isolated and
-            // does not poison the recovery read below.
-            OperationalEvent saved = transactionTemplate.execute(status -> events.save(toCreate));
+            // Atomic event + outbox write (INV-OUTBOX-001, INV-EVENT-006, ADR-0013): both the
+            // event and its single PENDING outbox message are persisted in ONE transaction, so
+            // they commit together or roll back together — there is never a durable accepted
+            // event without its outbox record. Keeping this in its own transaction also isolates
+            // a (client_id, idempotency_key) unique-violation rollback so it does not poison the
+            // recovery read below. Only this new-event path creates an outbox message; replay
+            // and conflict paths never do.
+            OperationalEvent saved = transactionTemplate.execute(status -> {
+                OperationalEvent persisted = events.save(toCreate);
+                outbox.save(outboxMessageFactory.forAcceptedEvent(persisted));
+                return persisted;
+            });
             return new AcceptedEvent(saved, false);
         } catch (DuplicateIdempotencyKeyException race) {
             // A concurrent request won the (client_id, idempotency_key) race between our

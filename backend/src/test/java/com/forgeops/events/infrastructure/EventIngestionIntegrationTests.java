@@ -64,6 +64,7 @@ class EventIngestionIntegrationTests {
         rest.getRestTemplate().setUriTemplateHandler(
                 new DefaultUriBuilderFactory("http://localhost:" + port));
         jdbcTemplate.execute("TRUNCATE TABLE operational_events CASCADE");
+        jdbcTemplate.execute("TRUNCATE TABLE outbox_messages CASCADE");
         jdbcTemplate.execute("TRUNCATE TABLE users CASCADE");
     }
 
@@ -112,6 +113,15 @@ class EventIngestionIntegrationTests {
         return jdbcTemplate.queryForObject("SELECT COUNT(*) FROM operational_events", Long.class);
     }
 
+    private long outboxCount() {
+        return jdbcTemplate.queryForObject("SELECT COUNT(*) FROM outbox_messages", Long.class);
+    }
+
+    private long outboxCountForAggregate(String eventId) {
+        return jdbcTemplate.queryForObject(
+                "SELECT COUNT(*) FROM outbox_messages WHERE aggregate_id = ?::uuid", Long.class, eventId);
+    }
+
     // ----- tests ---------------------------------------------------------------
 
     @Test
@@ -140,6 +150,23 @@ class EventIngestionIntegrationTests {
         assertThat(row.get("status")).isEqualTo("RECEIVED");
         assertThat((String) row.get("payload_hash")).isNotBlank();
         assertThat(eventCount()).isEqualTo(1);
+
+        // Atomic outbox: exactly one PENDING outbox message referencing this event was
+        // committed in the same transaction (INV-OUTBOX-001). Response exposes no outbox data.
+        assertThat(json.has("outbox_id")).isFalse();
+        assertThat(outboxCount()).isEqualTo(1);
+        Map<String, Object> outbox = jdbcTemplate.queryForMap(
+                "SELECT aggregate_type, aggregate_id, message_type, status, attempts, "
+                        + "published_at, next_attempt_at, last_error FROM outbox_messages "
+                        + "WHERE aggregate_id = ?::uuid", id);
+        assertThat(outbox.get("aggregate_type")).isEqualTo("OPERATIONAL_EVENT");
+        assertThat(outbox.get("aggregate_id").toString()).isEqualTo(id);
+        assertThat(outbox.get("message_type")).isEqualTo("OPERATIONAL_EVENT_RECEIVED");
+        assertThat(outbox.get("status")).isEqualTo("PENDING");
+        assertThat(((Number) outbox.get("attempts")).intValue()).isZero();
+        assertThat(outbox.get("published_at")).isNull();
+        assertThat(outbox.get("next_attempt_at")).isNull();
+        assertThat(outbox.get("last_error")).isNull();
     }
 
     @Test
@@ -155,6 +182,7 @@ class EventIngestionIntegrationTests {
         assertThat(second.getStatusCode()).isEqualTo(HttpStatus.ACCEPTED);
         assertThat(second.getBody()).isEqualTo(first.getBody()); // same event representation
         assertThat(eventCount()).isEqualTo(1); // uniqueness held; no second event
+        assertThat(outboxCount()).isEqualTo(1); // replay creates no additional outbox message
     }
 
     @Test
@@ -169,6 +197,7 @@ class EventIngestionIntegrationTests {
         assertThat(conflict.getHeaders().getContentType())
                 .isEqualTo(MediaType.APPLICATION_PROBLEM_JSON);
         assertThat(eventCount()).isEqualTo(1); // original unchanged
+        assertThat(outboxCount()).isEqualTo(1); // conflict creates no outbox message
     }
 
     @Test
@@ -285,5 +314,10 @@ class EventIngestionIntegrationTests {
         pool.shutdown();
 
         assertThat(eventCount()).isEqualTo(1); // DB uniqueness guaranteed exactly one
+        assertThat(outboxCount()).isEqualTo(1); // exactly one outbox message for the one event
+
+        String eventId = jdbcTemplate.queryForObject(
+                "SELECT id::text FROM operational_events", String.class);
+        assertThat(outboxCountForAggregate(eventId)).isEqualTo(1);
     }
 }

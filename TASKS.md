@@ -138,6 +138,40 @@ role-based access.
   Security Crypto `Argon2PasswordEncoder` + Bouncy Castle) behind the existing
   `PasswordHash` boundary, with the SECURITY_DESIGN §5 baseline parameters (ADR-0031).
   6 focused unit tests; verified locally.
+- **Phase 6 — Slice 1: transactional outbox persistence (In progress):** the durable outbox
+  foundation — **persistence + atomic event+outbox commit only, no publishing**
+  (ADR-0013 steps 1–3, ADR-0019, PERSISTENCE_MODEL §13/§16/§18, DOMAIN_MODEL §9,
+  INV-OUTBOX-001, INV-EVENT-006). New Flyway `V3__outbox.sql` creates `outbox_messages`
+  (`id` UUID v7, `message_type`, `aggregate_type`, `aggregate_id` UUID, `payload` JSONB,
+  `status` PENDING/PUBLISHED CHECK, `attempts` ≥0 CHECK, `created_at`, and the unused-for-now
+  publisher fields `published_at`/`next_attempt_at`/`last_error`), with the §16 partial
+  indexes (`(status, next_attempt_at) WHERE status='PENDING'` and `(published_at) WHERE
+  status='PUBLISHED'`). Per the approved reconnaissance, `aggregate_id` is a generic UUID with
+  **no** FK to `operational_events(id)` (the model does not mandate one; `aggregate_type` is
+  intentionally generic); event↔outbox pairing is guaranteed by the atomic transaction. New
+  `events.domain` `OutboxMessage` (framework-free) + `OutboxStatus` + `OutboxMessageRepository`
+  port; `events.infrastructure` `OutboxMessageEntity` (JSONB via `@JdbcTypeCode(SqlTypes.JSON)`),
+  Spring Data repo, `JpaOutboxMessageRepository` (saveAndFlush). `events.application`
+  `OutboxMessageFactory` builds a deterministic `PENDING` message (`aggregate_type`=
+  `OPERATIONAL_EVENT`, `message_type`=`OPERATIONAL_EVENT_RECEIVED`, `aggregate_id`=event id,
+  `created_at`=event `received_at`, payload = internal handoff body identifying the event; not
+  a public API contract). `EventIngestionService` now writes the event **and** exactly one
+  outbox message inside the **same** `TransactionTemplate` transaction — both commit or both
+  roll back (never a durable event without its outbox record); the isolated transaction still
+  protects the concurrent-duplicate recovery re-read. Replay and conflict paths create **no**
+  outbox message; the public event API is unchanged (no outbox data exposed). All Phase 5
+  semantics preserved (reference validation 422, 400/401/403/409, microsecond `received_at`,
+  canonical hashing, JWT producer identity, UUID v7). Non-container suite passes **115/115**
+  locally incl. architecture + module-boundary tests (7 new unit tests: `OutboxMessageFactory`
+  determinism + `EventIngestionService` outbox interaction — one per new event, none on
+  replay/conflict). Testcontainers integration tests (`EventIngestionIntegrationTests` extended
+  with outbox assertions; new `OutboxAtomicRollbackIntegrationTests` forcing an outbox-write
+  failure and asserting **neither** event nor outbox persists) are written but **blocked
+  locally by the Docker Engine 29 limitation**; not executed locally. **NOT in this slice:**
+  RabbitMQ, publisher/polling, `FOR UPDATE SKIP LOCKED` claiming, PUBLISHED transitions,
+  retry/backoff, acknowledgement, dead-letter, consumers, async workers, incidents, Redis,
+  SSE, frontend, AI. **Status: YELLOW — implementation complete, authoritative CI/integration
+  verification pending.**
 - **Phase 5 — Slice 1: event ingestion core (Done — CI verified):** the synchronous
   authenticated-submit → validate → idempotency → persist path for operational events
   (FR-EV-1..4, API_CONTRACTS §6/§7, PERSISTENCE_MODEL §5/§6/§16/§17, ADR-0016/0023/0024/0025).
@@ -341,10 +375,14 @@ Implement the event ingestion API with validation, persistence, and idempotency.
   SUCCESS on native Linux Docker/Testcontainers PostgreSQL, no exclusions.** FR-EV-5
   (asynchronous processing) is **not** part of this milestone — it belongs to Phase 6.
 
-### Phase 6 — Async Event Processing — `Not started`
+### Phase 6 — Async Event Processing — `In progress`
 Implement the **transactional outbox** (event + outbox record committed in one
 transaction), the outbox publisher that hands off to RabbitMQ, and idempotent consumers
 that process under at-least-once delivery with explicit acknowledgement.
+- **Slice 1 (transactional outbox persistence)** — done pending CI: event + outbox committed
+  atomically in one transaction (INV-OUTBOX-001; see the detailed entry above). Remaining:
+  outbox publisher (polling + `FOR UPDATE SKIP LOCKED`, PUBLISHED transitions, retry/backoff),
+  RabbitMQ handoff, and idempotent consumers (FR-EV-5, FR-RL-7..11).
 - **Milestone:** Accepted events reach asynchronous processing via the outbox and are
   processed idempotently by a worker (FR-EV-5, FR-RL-7..11; see
   [ADR-0013](./DECISIONS.md#adr-0013--transactional-outbox-for-reliable-event-publishing)
