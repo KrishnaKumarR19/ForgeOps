@@ -1,6 +1,6 @@
 # ForgeOps — Delivery Phases & Milestones
 
-Status: Implementation in progress — Phase 5 (Event Ingestion, FR-EV-1..4) complete/CI-verified; Phase 6 not started
+Status: Implementation in progress — Phase 5 (Event Ingestion, FR-EV-1..4) complete/CI-verified; Phase 6 (Async Event Processing) Slices 1–3 CI-verified (transactional outbox, publisher→RabbitMQ, idempotent consumer), retention cleanup remaining
 Related: [PRD.md](./PRD.md) · [ARCHITECTURE.md](./ARCHITECTURE.md) · [DECISIONS.md](./DECISIONS.md) · [ENGINEERING_CONSTITUTION.md](./ENGINEERING_CONSTITUTION.md)
 
 > This is a **high-level roadmap of phases and milestones only** — not a detailed task
@@ -138,6 +138,48 @@ role-based access.
   Security Crypto `Argon2PasswordEncoder` + Bouncy Castle) behind the existing
   `PasswordHash` boundary, with the SECURITY_DESIGN §5 baseline parameters (ADR-0031).
   6 focused unit tests; verified locally.
+- **Phase 6 — Slice 3: idempotent RabbitMQ consumer (Done):** the asynchronous consumer side
+  of Phase 6 (ADR-0014, ADR-0005; FR-EV-5 consumer side, FR-RL-3/4/5/10/11; INV-MSG-001..006).
+  New `events.domain` `ProcessingOutcome` (MARKED/ALREADY_PROCESSED/NOT_FOUND) +
+  `OperationalEventRepository.markProcessed(UUID)` (framework-free); the Spring Data adapter
+  implements it as a conditional native `UPDATE operational_events SET status='PROCESSED'
+  WHERE id=? AND status='RECEIVED'` — the idempotency primitive (INV-MSG-003, FR-RL-3/10):
+  a duplicate/concurrent delivery either transitions the row exactly once or observes it
+  already PROCESSED; no check-then-update race. **No migration** — reuses the existing
+  `status` RECEIVED/PROCESSED column (V2). `events.application` `EventProcessingService`
+  wraps the mark in a `TransactionTemplate` (the commit precedes the ack) and raises
+  `NonRetryableEventProcessingException` for NOT_FOUND (poison → dead-letter, not retry);
+  `EventConsumerProperties` (`forgeops.events.consumer.*`: enabled, concurrency, bounded
+  retry). `events.infrastructure.messaging` `OperationalEventConsumer` (`@RabbitListener` on
+  the processing queue; parses `event_id` from the canonical JSON body; parse/missing/non-UUID
+  → non-retryable) and `EventConsumerConfig` (`SimpleRabbitListenerContainerFactory` with
+  `AcknowledgeMode.AUTO` so the ack follows the successful method return = after commit,
+  `defaultRequeueRejected=false`, a stateless bounded-retry interceptor with exponential
+  backoff that never retries the non-retryable poison exception, and a
+  `RejectAndDontRequeueRecoverer` so exhausted/poison messages are rejected without requeue);
+  `RabbitMqTopologyConfig` extended with a durable dead-letter exchange + queue and the
+  processing queue's `x-dead-letter-exchange`/routing-key args (INV-MSG-006, FR-RL-5). The
+  effect ends at `status = PROCESSED`; **no incidents / detection / correlation (Phase 7)**.
+  Delivery is at-least-once with an exactly-once **effect** via idempotency; exactly-once
+  delivery is **not** claimed (INV-MSG-001/-002). The consumer is disabled in tests by default
+  (`forgeops.events.consumer.enabled=false`) so integration tests enable it explicitly.
+  Non-container suite passes **134/134** locally incl. architecture + module-boundary tests
+  (8 new unit tests: `EventProcessingService` mark/duplicate-no-op/poison/transient;
+  `EventConsumerProperties` defaults). Testcontainers integration tests (PostgreSQL + RabbitMQ:
+  `EventProcessingRepositoryIntegrationTests` conditional-update outcomes in an explicit
+  transaction; `OperationalEventConsumerIntegrationTests` happy path / duplicate-exactly-once /
+  poison→DLQ; `ConsumerRetryDeadLetterIntegrationTests` transient-failure retried then→DLQ;
+  `EndToEndEventProcessingIntegrationTests` REST→outbox→publisher→RabbitMQ→consumer→PROCESSED)
+  are **blocked locally by the Docker Engine 29 limitation**; executed on CI. Slice 1/2
+  semantics unchanged (outbox persistence, publisher, confirms, SKIP LOCKED, PENDING→PUBLISHED,
+  backoff). Secrets are env-only. **One CI-only test-fixture issue was found and fixed
+  (test-only, no production change):** the two new raw-JDBC insert helpers bound
+  `java.time.Instant` directly for the TIMESTAMPTZ columns, which the PostgreSQL driver cannot
+  type-infer (surfaced as `BadSqlGrammarException`) — now wrapped in `java.sql.Timestamp.from(...)`.
+  **Status: GREEN — verified by GitHub Actions CI (run 33639030614, commit 484ae95):
+  `./mvnw -B clean verify` succeeded on ubuntu-latest with native Docker, running the full
+  unit + architecture + module-boundary + Testcontainers PostgreSQL & RabbitMQ suite with no
+  exclusions.**
 - **Phase 6 — Slice 2: outbox publisher + RabbitMQ handoff (In progress):** reliably moves
   committed PENDING outbox rows from PostgreSQL to RabbitMQ (ADR-0013 steps 4–7, ADR-0019,
   ADR-0022, ADR-0014; FR-EV-5, FR-RL-8/9; PERSISTENCE_MODEL §14/§16). Added
@@ -431,8 +473,12 @@ that process under at-least-once delivery with explicit acknowledgement.
 - **Slice 2 (outbox publisher + RabbitMQ handoff)** — CI verified: polling publisher with
   `FOR UPDATE SKIP LOCKED` claiming, RabbitMQ publish with publisher confirms, PENDING→PUBLISHED
   on success, retryable failure with capped-exponential backoff (see the detailed entry above).
-  Remaining Phase 6: idempotent consumers, explicit ack, DLQ/retry policy (FR-RL-3/4/5,
-  FR-RL-10/11, FR-EV-5 consumer side), and retention cleanup.
+- **Slice 3 (idempotent RabbitMQ consumer)** — CI verified: `@RabbitListener` on
+  `forgeops.events.processing` idempotently marks events `RECEIVED → PROCESSED` (conditional
+  update, PostgreSQL-authoritative), acknowledges only after the DB commit, retries transient
+  failures under a bounded policy, and dead-letters poison / retry-exhausted messages to a new
+  DLX/DLQ (FR-EV-5 consumer side, FR-RL-3/4/5/10/11, ADR-0014; see the detailed entry above).
+  Remaining Phase 6: outbox retention cleanup (prune old PUBLISHED rows).
 - **Milestone:** Accepted events reach asynchronous processing via the outbox and are
   processed idempotently by a worker (FR-EV-5, FR-RL-7..11; see
   [ADR-0013](./DECISIONS.md#adr-0013--transactional-outbox-for-reliable-event-publishing)
