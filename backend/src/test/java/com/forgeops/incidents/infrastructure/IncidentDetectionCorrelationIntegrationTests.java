@@ -10,6 +10,7 @@ import java.sql.Timestamp;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
+import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.Callable;
 import java.util.concurrent.CountDownLatch;
@@ -44,6 +45,8 @@ class IncidentDetectionCorrelationIntegrationTests {
     @Autowired
     private EventProcessingService processingService;
     @Autowired
+    private com.forgeops.incidents.domain.IncidentRepository incidentRepository;
+    @Autowired
     private JdbcTemplate jdbcTemplate;
 
     // Seeded reference data (V2).
@@ -52,7 +55,13 @@ class IncidentDetectionCorrelationIntegrationTests {
     private static final String ENV_A = "018f1001-0000-7000-8000-000000000001";     // production
     private static final String ENV_B = "018f1001-0000-7000-8000-000000000002";     // staging
     private static final UUID CLIENT = UUID.fromString("018f0000-0000-7000-8000-0000000000a1");
-    private final Instant baseNow = Instant.parse("2026-03-20T12:00:00Z");
+    // Anchored to the real clock: detection CREATES incidents stamped with the injected system
+    // Clock (created_at ~= now). Correlating to a detection-created incident (e.g. the concurrency
+    // race) requires the event's received_at to be at/after that created_at within the window, so
+    // events must be anchored near now — a hardcoded past date would place every event before the
+    // winner's created_at and make correlation impossible. Pre-inserted incidents use baseNow-
+    // relative timestamps, so all window boundaries remain exact.
+    private final Instant baseNow = Instant.now().truncatedTo(java.time.temporal.ChronoUnit.SECONDS);
 
     @BeforeEach
     void setUp() {
@@ -135,12 +144,30 @@ class IncidentDetectionCorrelationIntegrationTests {
 
     @Test
     void eventOutsideWindowCreatesNewIncident() {
-        insertIncident(SERVICE_A, ENV_A, "boom", "OPEN", baseNow.minus(Duration.ofMinutes(45)));
-        UUID eventId = insertReceivedEvent(SERVICE_A, ENV_A, "boom", baseNow); // 45m > 30m window
+        // An incident whose created_at is 45m before the event's received_at is outside the 30m
+        // window and must NOT be matched. Because uq_incidents_active_correlation permits at most
+        // ONE active incident per correlation key, this stale incident has since been RESOLVED
+        // (it aged out) — so the temporal miss legitimately drives creation of a new active
+        // incident without two active rows ever sharing the key. Detection must create a new one.
+        UUID stale = insertIncident(SERVICE_A, ENV_A, "boom", "RESOLVED", baseNow.minus(Duration.ofMinutes(45)));
+        UUID eventId = insertReceivedEvent(SERVICE_A, ENV_A, "boom", baseNow);
 
         processingService.process(eventId);
 
         assertThat(incidentCount()).isEqualTo(2L);
+        assertThat(activeIncidentCount(SERVICE_A, "boom")).isEqualTo(1L);
+        assertThat(eventIncidentId(eventId)).isNotEqualTo(stale.toString()); // not the stale one
+    }
+
+    @Test
+    void activeIncidentOutsideWindowIsNotMatchedByFindActiveMatch() {
+        // Direct temporal-predicate check at the repository level: an ACTIVE incident created
+        // outside the window is not returned by findActiveMatch (no second active row is created,
+        // so the uniqueness invariant is respected).
+        insertIncident(SERVICE_A, ENV_A, "boom", "OPEN", baseNow.minus(Duration.ofMinutes(45)));
+        Optional<com.forgeops.incidents.domain.Incident> match = incidentRepository.findActiveMatch(
+                UUID.fromString(SERVICE_A), UUID.fromString(ENV_A), "boom", baseNow, Duration.ofMinutes(30));
+        assertThat(match).isEmpty();
     }
 
     @Test
@@ -156,14 +183,16 @@ class IncidentDetectionCorrelationIntegrationTests {
     }
 
     @Test
-    void futureCreatedIncidentDoesNotMatch() {
-        // incident created AFTER the event's received_at must not match.
+    void futureCreatedIncidentIsNotMatchedByFindActiveMatch() {
+        // An incident created AFTER the event's received_at must not match the temporal predicate
+        // (no future incidents). Asserted at the repository level so we never hold two active
+        // incidents with the same correlation key (uq_incidents_active_correlation invariant):
+        // the future incident stays the only active row for the key.
         insertIncident(SERVICE_A, ENV_A, "boom", "OPEN", baseNow.plus(Duration.ofMinutes(5)));
-        UUID eventId = insertReceivedEvent(SERVICE_A, ENV_A, "boom", baseNow);
-
-        processingService.process(eventId);
-
-        assertThat(incidentCount()).isEqualTo(2L); // created a new one, did not match the future incident
+        Optional<com.forgeops.incidents.domain.Incident> match = incidentRepository.findActiveMatch(
+                UUID.fromString(SERVICE_A), UUID.fromString(ENV_A), "boom", baseNow, Duration.ofMinutes(30));
+        assertThat(match).isEmpty();
+        assertThat(activeIncidentCount(SERVICE_A, "boom")).isEqualTo(1L);
     }
 
     @Test
@@ -218,8 +247,14 @@ class IncidentDetectionCorrelationIntegrationTests {
 
     @Test
     void concurrentDistinctEventsCreateExactlyOneIncidentAndBothAssociate() throws Exception {
-        UUID e1 = insertReceivedEvent(SERVICE_A, ENV_A, "boom", baseNow);
-        UUID e2 = insertReceivedEvent(SERVICE_A, ENV_A, "boom", baseNow);
+        // The winner CREATEs the incident with created_at from the real Clock (~= now = baseNow).
+        // The loser must correlate to it, which requires the events' received_at to be at/after
+        // that created_at (findActiveMatch needs created_at <= received_at). Anchor the events a
+        // minute ahead of baseNow so correlation is deterministic regardless of the exact commit
+        // instant, still far inside the 30-minute window.
+        Instant receivedAt = baseNow.plus(Duration.ofMinutes(1));
+        UUID e1 = insertReceivedEvent(SERVICE_A, ENV_A, "boom", receivedAt);
+        UUID e2 = insertReceivedEvent(SERVICE_A, ENV_A, "boom", receivedAt);
 
         ExecutorService pool = Executors.newFixedThreadPool(2);
         CountDownLatch ready = new CountDownLatch(2);

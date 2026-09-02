@@ -68,7 +68,14 @@ class OperationalEventConsumerIntegrationTests {
 
     @BeforeEach
     void setUp() {
+        // Under Slice 4 the consumer now runs detection, which creates/correlates an incident and
+        // writes a SYSTEM audit row. Isolate ALL affected tables so a residual active incident
+        // from a prior scenario (with a real-clock created_at that falls outside these fixtures'
+        // fixed received_at window) cannot make detection attempt a second active incident with
+        // the same correlation key and hit uq_incidents_active_correlation.
+        jdbcTemplate.execute("TRUNCATE TABLE audit_entries CASCADE");
         jdbcTemplate.execute("TRUNCATE TABLE operational_events CASCADE");
+        jdbcTemplate.execute("TRUNCATE TABLE incidents CASCADE");
         jdbcTemplate.execute("TRUNCATE TABLE outbox_messages CASCADE");
         drain(QUEUE);
         drain(DLQ);
