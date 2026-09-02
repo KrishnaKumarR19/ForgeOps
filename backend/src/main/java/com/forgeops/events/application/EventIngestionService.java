@@ -7,6 +7,7 @@ import com.forgeops.events.domain.OperationalEventRepository;
 import com.forgeops.events.domain.ReferenceDataRepository;
 import java.time.Clock;
 import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import java.util.Optional;
 import java.util.UUID;
 import org.springframework.stereotype.Service;
@@ -108,7 +109,11 @@ public class EventIngestionService {
     private OperationalEvent build(IngestEventCommand command, UUID serviceId, UUID environmentId,
                                    String canonicalPayload, String payloadHash) {
         UUID id = idGenerator.newId();
-        Instant receivedAt = clock.instant();
+        // Truncate to microseconds: PostgreSQL timestamptz has microsecond precision, so a
+        // nanosecond JVM instant would be rounded on storage and read back differently. Using
+        // the stored precision here keeps the acceptance response byte-identical to what a
+        // later read (e.g. an idempotent replay resolved from the DB) returns.
+        Instant receivedAt = clock.instant().truncatedTo(ChronoUnit.MICROS);
         return OperationalEvent.accepted(
                 id,
                 command.clientId(),
