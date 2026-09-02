@@ -138,6 +138,42 @@ role-based access.
   Security Crypto `Argon2PasswordEncoder` + Bouncy Castle) behind the existing
   `PasswordHash` boundary, with the SECURITY_DESIGN §5 baseline parameters (ADR-0031).
   6 focused unit tests; verified locally.
+- **Phase 6 — Slice 2: outbox publisher + RabbitMQ handoff (In progress):** reliably moves
+  committed PENDING outbox rows from PostgreSQL to RabbitMQ (ADR-0013 steps 4–7, ADR-0019,
+  ADR-0022, ADR-0014; FR-EV-5, FR-RL-8/9; PERSISTENCE_MODEL §14/§16). Added
+  `spring-boot-starter-amqp` (runtime) and `org.testcontainers:rabbitmq` (test), Boot-BOM
+  managed. Extended the `OutboxMessageRepository` port with `claimPending`/`markPublished`/
+  `recordFailure` (framework-free); the Spring Data adapter implements claiming via a native
+  `... WHERE status='PENDING' AND (next_attempt_at IS NULL OR next_attempt_at <= :now) ORDER BY
+  created_at LIMIT :batchSize FOR UPDATE SKIP LOCKED` (uses the §16 partial index) and
+  conditional `UPDATE ... WHERE id=? AND status='PENDING'` for mark/failure (stale-worker
+  safe). New `events.domain` `MessageBroker` port + `MessagePublishException`; `events.
+  infrastructure.messaging` `RabbitMqTopologyConfig` (durable topic exchange `forgeops.events`,
+  durable queue `forgeops.events.processing`, routing key `operational-event.received` — all
+  config-driven, internal, not a REST contract), `RabbitMessageBroker` (publishes persistent
+  JSON with `messageId`=outbox id + `aggregate_id`/`message_type` headers, blocks on
+  **publisher confirms** so success = broker-accepted). `events.application`
+  `OutboxPublishService` runs one `TransactionTemplate` cycle: claim due PENDING → publish each
+  → `markPublished` on confirm / `recordFailure` (attempts+1, capped-exponential
+  `next_attempt_at` via `BackoffPolicy` base 5s/cap 5m, bounded `last_error`) on failure; a
+  single failure never aborts the batch. Config-driven `@Scheduled` fixed-delay poller
+  (`OutboxPublisherScheduler`, `@EnableScheduling`, cycle-exception isolation; disabled in tests
+  via `forgeops.outbox.publisher.enabled=false`). Only `PENDING → PUBLISHED`; no new status.
+  Delivery is at-least-once (INV-MSG-001/-002, INV-OUTBOX-004/-005): a crash after broker
+  acceptance but before commit re-publishes later — handled by future idempotent consumers.
+  Non-container suite passes **126/126** locally incl. architecture + module-boundary tests
+  (11 new unit tests: `BackoffPolicy` capped/overflow-safe; `OutboxPublishService`
+  success/failure/retry-metadata/batch-isolation/claim-eligibility). Testcontainers integration
+  tests (`OutboxPublisherIntegrationTests` — real PostgreSQL + real RabbitMQ: confirmed publish
+  → PUBLISHED + message on queue with correct id/routing/persistence/content-type, claim
+  eligibility, conditional PUBLISHED guard; `OutboxPublisherFailureIntegrationTests` — retryable
+  failure metadata + SKIP LOCKED concurrency) are written but **blocked locally by the Docker
+  Engine 29 limitation**; not executed locally. Public REST API unchanged; no outbox/publisher/
+  broker data exposed. Secrets are env-only (no committed RabbitMQ credentials, no default
+  password). **NOT in this slice:** consumers, consumer idempotency, explicit consumer ack,
+  DLQ/dead-letter, incidents, Redis, SSE, frontend, AI, rate limiting, retention cleanup. No
+  schema change (V3 already had the publisher fields). **Status: YELLOW — implementation
+  complete, authoritative CI/integration verification pending.**
 - **Phase 6 — Slice 1: transactional outbox persistence (In progress):** the durable outbox
   foundation — **persistence + atomic event+outbox commit only, no publishing**
   (ADR-0013 steps 1–3, ADR-0019, PERSISTENCE_MODEL §13/§16/§18, DOMAIN_MODEL §9,
@@ -381,10 +417,13 @@ Implement the event ingestion API with validation, persistence, and idempotency.
 Implement the **transactional outbox** (event + outbox record committed in one
 transaction), the outbox publisher that hands off to RabbitMQ, and idempotent consumers
 that process under at-least-once delivery with explicit acknowledgement.
-- **Slice 1 (transactional outbox persistence)** — done pending CI: event + outbox committed
-  atomically in one transaction (INV-OUTBOX-001; see the detailed entry above). Remaining:
-  outbox publisher (polling + `FOR UPDATE SKIP LOCKED`, PUBLISHED transitions, retry/backoff),
-  RabbitMQ handoff, and idempotent consumers (FR-EV-5, FR-RL-7..11).
+- **Slice 1 (transactional outbox persistence)** — CI verified: event + outbox committed
+  atomically in one transaction (INV-OUTBOX-001; see the detailed entry above).
+- **Slice 2 (outbox publisher + RabbitMQ handoff)** — done pending CI: polling publisher with
+  `FOR UPDATE SKIP LOCKED` claiming, RabbitMQ publish with publisher confirms, PENDING→PUBLISHED
+  on success, retryable failure with capped-exponential backoff (see the detailed entry above).
+  Remaining Phase 6: idempotent consumers, explicit ack, DLQ/retry policy (FR-RL-3/4/5,
+  FR-RL-10/11, FR-EV-5 consumer side), and retention cleanup.
 - **Milestone:** Accepted events reach asynchronous processing via the outbox and are
   processed idempotently by a worker (FR-EV-5, FR-RL-7..11; see
   [ADR-0013](./DECISIONS.md#adr-0013--transactional-outbox-for-reliable-event-publishing)

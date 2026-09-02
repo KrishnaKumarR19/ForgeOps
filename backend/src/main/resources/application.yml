@@ -31,8 +31,37 @@ spring:
   flyway:
     enabled: true
 
+  # RabbitMQ (Phase 6 Slice 2, ADR-0013): asynchronous transport only. Credentials come from
+  # the environment; no secrets are committed and there is no default password. Publisher
+  # confirms are enabled so the outbox publisher only marks a message PUBLISHED once the broker
+  # has confirmed acceptance (ADR-0019).
+  rabbitmq:
+    host: ${FORGEOPS_RABBITMQ_HOST:localhost}
+    port: ${FORGEOPS_RABBITMQ_PORT:5672}
+    virtual-host: ${FORGEOPS_RABBITMQ_VHOST:/}
+    username: ${FORGEOPS_RABBITMQ_USERNAME:guest}
+    password: ${FORGEOPS_RABBITMQ_PASSWORD:}
+    publisher-confirm-type: simple
+
 server:
   port: ${SERVER_PORT:8080}
+
+# Outbox publisher (Phase 6 Slice 2). Safe, non-secret defaults; overridable per environment.
+# The publisher polls PENDING outbox rows, publishes them to RabbitMQ, marks them PUBLISHED on
+# confirmed acceptance, and leaves failures retryable with capped exponential backoff.
+forgeops:
+  outbox:
+    publisher:
+      poll-delay: ${FORGEOPS_OUTBOX_POLL_DELAY:5s}
+      batch-size: ${FORGEOPS_OUTBOX_BATCH_SIZE:100}
+      backoff:
+        base-delay: ${FORGEOPS_OUTBOX_BACKOFF_BASE:5s}
+        max-delay: ${FORGEOPS_OUTBOX_BACKOFF_MAX:5m}
+  events:
+    rabbitmq:
+      exchange: ${FORGEOPS_EVENTS_EXCHANGE:forgeops.events}
+      queue: ${FORGEOPS_EVENTS_QUEUE:forgeops.events.processing}
+      routing-key: ${FORGEOPS_EVENTS_ROUTING_KEY:operational-event.received}
 
 # Actuator: expose only the health endpoint in this phase. Prometheus, business metrics,
 # and detailed monitoring are deferred to later phases (ARCHITECTURE.md §4.4).

@@ -56,6 +56,20 @@ class OutboxAtomicRollbackIntegrationTests {
                 public OutboxMessage save(OutboxMessage message) {
                     throw new IllegalStateException("Simulated outbox persistence failure");
                 }
+
+                @Override
+                public java.util.List<OutboxMessage> claimPending(int batchSize, java.time.Instant now) {
+                    return java.util.List.of();
+                }
+
+                @Override
+                public void markPublished(java.util.UUID id, java.time.Instant publishedAt) {
+                }
+
+                @Override
+                public void recordFailure(java.util.UUID id, int attempts,
+                                          java.time.Instant nextAttemptAt, String lastError) {
+                }
             };
         }
     }

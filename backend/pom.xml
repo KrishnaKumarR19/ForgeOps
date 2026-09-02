@@ -88,6 +88,14 @@
             <scope>runtime</scope>
         </dependency>
 
+        <!-- Spring AMQP / RabbitMQ (Phase 6 Slice 2, ADR-0013): the outbox publisher hands
+             committed PENDING outbox rows off to RabbitMQ (transport only; PostgreSQL remains
+             the system of record). Version managed by the Boot BOM. -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-amqp</artifactId>
+        </dependency>
+
         <!-- Spring Security Crypto ONLY: provides Argon2PasswordEncoder for password
              hashing (Phase 4.2 Slice 1, ADR-0031). This is the crypto module, NOT
              spring-boot-starter-security — no web filter chain, no authentication, no
@@ -142,6 +150,13 @@
         <dependency>
             <groupId>org.testcontainers</groupId>
             <artifactId>postgresql</artifactId>
+            <scope>test</scope>
+        </dependency>
+        <!-- Testcontainers: real RabbitMQ for the outbox-publisher integration tests
+             (Phase 6 Slice 2). Version managed by the Boot BOM. Test only. -->
+        <dependency>
+            <groupId>org.testcontainers</groupId>
+            <artifactId>rabbitmq</artifactId>
             <scope>test</scope>
         </dependency>
 

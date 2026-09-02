@@ -110,7 +110,7 @@ class EventIngestionServiceTests {
         }
     };
 
-    /** In-memory outbox repository counting saved messages. */
+    /** In-memory outbox repository counting saved messages (Slice 1 ingestion tests only). */
     private static class InMemoryOutbox implements OutboxMessageRepository {
         final List<OutboxMessage> stored = new ArrayList<>();
 
@@ -118,6 +118,20 @@ class EventIngestionServiceTests {
         public OutboxMessage save(OutboxMessage message) {
             stored.add(message);
             return message;
+        }
+
+        // Publisher-side operations are not exercised by ingestion tests.
+        @Override
+        public List<OutboxMessage> claimPending(int batchSize, java.time.Instant now) {
+            return List.of();
+        }
+
+        @Override
+        public void markPublished(UUID id, java.time.Instant publishedAt) {
+        }
+
+        @Override
+        public void recordFailure(UUID id, int attempts, java.time.Instant nextAttemptAt, String lastError) {
         }
     }
 
