@@ -1,6 +1,6 @@
 # ForgeOps — Delivery Phases & Milestones
 
-Status: Implementation in progress — Phase 5 (Event Ingestion, FR-EV-1..4) complete/CI-verified; Phase 6 (Async Event Processing) Slices 1–3 CI-verified (transactional outbox, publisher→RabbitMQ, idempotent consumer), retention cleanup remaining
+Status: Implementation in progress — Phase 5 (Event Ingestion, FR-EV-1..4) complete/CI-verified; Phase 6 (Async Event Processing) complete/CI-verified (Slices 1–4: transactional outbox, publisher→RabbitMQ, idempotent consumer, retention cleanup); Phase 7 (Incident Domain) not started
 Related: [PRD.md](./PRD.md) · [ARCHITECTURE.md](./ARCHITECTURE.md) · [DECISIONS.md](./DECISIONS.md) · [ENGINEERING_CONSTITUTION.md](./ENGINEERING_CONSTITUTION.md)
 
 > This is a **high-level roadmap of phases and milestones only** — not a detailed task
@@ -138,6 +138,39 @@ role-based access.
   Security Crypto `Argon2PasswordEncoder` + Bouncy Castle) behind the existing
   `PasswordHash` boundary, with the SECURITY_DESIGN §5 baseline parameters (ADR-0031).
   6 focused unit tests; verified locally.
+- **Phase 6 — Slice 4: outbox retention cleanup (Done):** the closing Phase 6 item — prune old
+  `PUBLISHED` outbox rows so the append-heavy `outbox_messages` table stays bounded
+  (PERSISTENCE_MODEL §15, ADR-0019, INV-OUTBOX-006). New framework-free
+  `OutboxMessageRepository.deletePublishedOlderThan(cutoff, batchSize)`; the Spring Data adapter
+  runs a bounded native `DELETE FROM outbox_messages WHERE id IN (SELECT id ... WHERE
+  status='PUBLISHED' AND published_at < :cutoff ORDER BY published_at LIMIT :batchSize)` using
+  the existing `(published_at) WHERE status='PUBLISHED'` partial index — **no migration**.
+  `events.application` `OutboxCleanupService` computes `cutoff = now − retention` from the
+  injected `Clock` and deletes in bounded batches (each in its own `TransactionTemplate`) until
+  a short batch stops the loop; `OutboxCleanupProperties` (`forgeops.outbox.cleanup.*`) is
+  validated with fallback defaults. `events.infrastructure.messaging` `OutboxCleanupScheduler`
+  (`@Scheduled` fixed-delay, enable-gated, per-cycle exception isolation) mirrors the publisher
+  scheduler; `SchedulingConfig` binds it. **ForgeOps v1 decision (PERSISTENCE_MODEL §15):**
+  retention 7 days (`PT168H`), hourly cadence (`PT1H`), 500 rows/batch, enabled by default.
+  **Safety:** only `status='PUBLISHED'` rows with `published_at` strictly before the cutoff are
+  deleted; `PENDING` (incl. failed-retryable / `next_attempt_at`) and `NULL published_at` rows
+  are never touched (INV-OUTBOX-003); cleanup never affects delivery — the publisher and
+  recovery paths read only `PENDING` rows (ADR-0022) and the outbox is never authoritative
+  business state (INV-OUTBOX-007); repeated runs are safe (idempotent). No Slice 1/2/3 semantic
+  changes. Non-container suite **145/145** locally incl. architecture + module-boundary tests
+  (11 new unit tests: `OutboxCleanupService` cutoff/eligibility/multi-batch/stop/failure;
+  `OutboxCleanupProperties` defaults/validation). Testcontainers PostgreSQL
+  `OutboxRetentionCleanupIntegrationTests` (eligibility matrix incl. boundary/recent/PENDING/
+  retryable/NULL-published_at, >1200-row batching via the service, repeated no-op, rollback-
+  does-not-corrupt, publisher/cleanup disjoint-rows) is **blocked locally by the Docker Engine
+  29 limitation**; executed on CI. **One CI-only test-fixture issue was found and fixed
+  (test-only, no production change):** the batching test positioned its retained "recent" row
+  at a fixed instant while the service computes the cutoff from the system `Clock`, so on CI's
+  real date that row was (correctly) also eligible (1201 vs 1200) — the service-driven tests now
+  position fixtures relative to the injected `Clock`. **Status: GREEN — verified by GitHub
+  Actions CI (run 33644108557, commit fb4660c): `./mvnw -B clean verify` succeeded on
+  ubuntu-latest with native Docker, full unit + architecture + module-boundary + Testcontainers
+  PostgreSQL & RabbitMQ suite with no exclusions.** This completes Phase 6.
 - **Phase 6 — Slice 3: idempotent RabbitMQ consumer (Done):** the asynchronous consumer side
   of Phase 6 (ADR-0014, ADR-0005; FR-EV-5 consumer side, FR-RL-3/4/5/10/11; INV-MSG-001..006).
   New `events.domain` `ProcessingOutcome` (MARKED/ALREADY_PROCESSED/NOT_FOUND) +
@@ -464,7 +497,7 @@ Implement the event ingestion API with validation, persistence, and idempotency.
   SUCCESS on native Linux Docker/Testcontainers PostgreSQL, no exclusions.** FR-EV-5
   (asynchronous processing) is **not** part of this milestone — it belongs to Phase 6.
 
-### Phase 6 — Async Event Processing — `In progress`
+### Phase 6 — Async Event Processing — `Done`
 Implement the **transactional outbox** (event + outbox record committed in one
 transaction), the outbox publisher that hands off to RabbitMQ, and idempotent consumers
 that process under at-least-once delivery with explicit acknowledgement.
@@ -478,11 +511,16 @@ that process under at-least-once delivery with explicit acknowledgement.
   update, PostgreSQL-authoritative), acknowledges only after the DB commit, retries transient
   failures under a bounded policy, and dead-letters poison / retry-exhausted messages to a new
   DLX/DLQ (FR-EV-5 consumer side, FR-RL-3/4/5/10/11, ADR-0014; see the detailed entry above).
-  Remaining Phase 6: outbox retention cleanup (prune old PUBLISHED rows).
+- **Slice 4 (outbox retention cleanup)** — CI verified: a scheduled job prunes old
+  `PUBLISHED` outbox rows (`status='PUBLISHED' AND published_at < now − retention`) in bounded
+  batches, never touching `PENDING`/retryable rows (INV-OUTBOX-003/006; see the detailed entry
+  above). ForgeOps v1 defaults: retention 7 days, hourly cadence, 500 rows/batch (PERSISTENCE_MODEL §15).
 - **Milestone:** Accepted events reach asynchronous processing via the outbox and are
-  processed idempotently by a worker (FR-EV-5, FR-RL-7..11; see
+  processed idempotently by a worker, and the outbox is size-bounded by retention cleanup
+  (FR-EV-5, FR-RL-7..11; see
   [ADR-0013](./DECISIONS.md#adr-0013--transactional-outbox-for-reliable-event-publishing)
   and [ADR-0014](./DECISIONS.md#adr-0014--at-least-once-delivery-with-idempotent-consumers)).
+  **Phase 6 complete — CI verified (run 33644108557, commit fb4660c).**
 
 ### Phase 7 — Incident Domain — `Not started`
 Implement incident lifecycle state machine, severity, assignment, notes, resolution,
