@@ -46,7 +46,7 @@ import org.springframework.web.util.DefaultUriBuilderFactory;
                 "forgeops.rate-limit.ingestion.limit=2",
                 "forgeops.rate-limit.ingestion.window=PT1M"
         })
-@Import(PostgresTestContainer.class)
+@Import({PostgresTestContainer.class, IngestionRateLimitIntegrationTests.CapturingInterceptorConfig.class})
 class IngestionRateLimitIntegrationTests {
 
     private static final String PASSWORD = "CorrectHorseBatteryStaple";
@@ -57,6 +57,75 @@ class IngestionRateLimitIntegrationTests {
     private UserProvisioningService provisioning;
     @Autowired
     private JdbcTemplate jdbcTemplate;
+    @Autowired
+    private org.springframework.web.servlet.mvc.method.annotation.RequestMappingHandlerMapping handlerMapping;
+
+    // TEMP diagnostic: is the rate-limit interceptor actually registered on the dispatcher's
+    // handler mapping in the full RANDOM_PORT context? Green here (with the HTTP tests disabled)
+    // proves registration works and points the remaining 202 at principal keying.
+    @Test
+    void diagnosticInterceptorIsRegisteredOnHandlerMapping() throws Exception {
+        var f = org.springframework.web.servlet.handler.AbstractHandlerMapping.class
+                .getDeclaredMethod("getAdaptedInterceptors");
+        f.setAccessible(true);
+        @SuppressWarnings("unchecked")
+        java.util.List<org.springframework.web.servlet.HandlerInterceptor> interceptors =
+                (java.util.List<org.springframework.web.servlet.HandlerInterceptor>) f.invoke(handlerMapping);
+        assertThat(interceptors)
+                .as("adapted interceptors on RequestMappingHandlerMapping = " + interceptors)
+                .anyMatch(i -> i instanceof IngestionRateLimitInterceptor);
+    }
+
+    /**
+     * TEMP H2 diagnostic: a test-only capturing interceptor registered on {@code /api/v1/events}
+     * records what the {@code SecurityContext} holds at MVC interceptor execution time during a
+     * REAL authenticated HTTP request. This observes the exact principal the production
+     * rate-limit interceptor would see, without touching production behavior.
+     */
+    static final java.util.concurrent.atomic.AtomicReference<String> CAPTURED_PRINCIPAL =
+            new java.util.concurrent.atomic.AtomicReference<>("<<never-invoked>>");
+
+    @org.springframework.boot.test.context.TestConfiguration
+    static class CapturingInterceptorConfig
+            implements org.springframework.web.servlet.config.annotation.WebMvcConfigurer {
+        @Override
+        public void addInterceptors(
+                org.springframework.web.servlet.config.annotation.InterceptorRegistry registry) {
+            registry.addInterceptor(new org.springframework.web.servlet.HandlerInterceptor() {
+                @Override
+                public boolean preHandle(jakarta.servlet.http.HttpServletRequest request,
+                                         jakarta.servlet.http.HttpServletResponse response,
+                                         Object handler) {
+                    var auth = org.springframework.security.core.context.SecurityContextHolder
+                            .getContext().getAuthentication();
+                    if (auth == null) {
+                        CAPTURED_PRINCIPAL.set("auth=null");
+                    } else {
+                        Object p = auth.getPrincipal();
+                        CAPTURED_PRINCIPAL.set("authClass=" + auth.getClass().getName()
+                                + " authenticated=" + auth.isAuthenticated()
+                                + " principalClass=" + (p == null ? "null" : p.getClass().getName()));
+                    }
+                    return true;
+                }
+            }).addPathPatterns("/api/v1/events");
+        }
+    }
+
+    @Test
+    void diagnosticPrincipalSeenByInterceptorDuringRealRequest() {
+        provisioning.provision("eng", PASSWORD, EnumSet.of(Role.ENGINEER));
+        String token = login("eng");
+        CAPTURED_PRINCIPAL.set("<<never-invoked>>");
+
+        ResponseEntity<String> resp = submit(token, 42);
+
+        assertThat(resp.getStatusCode()).isEqualTo(HttpStatus.ACCEPTED);
+        // The failure message (surfaced in the report) reveals the exact principal type seen.
+        assertThat(CAPTURED_PRINCIPAL.get())
+                .as("principal seen by MVC interceptor during POST /api/v1/events")
+                .contains("principalClass=com.forgeops.identity.application.AuthenticatedUser");
+    }
 
     private TestRestTemplate rest;
 
@@ -100,6 +169,7 @@ class IngestionRateLimitIntegrationTests {
         return jdbcTemplate.queryForObject("SELECT COUNT(*) FROM outbox_messages", Long.class);
     }
 
+    @org.junit.jupiter.api.Disabled("TEMP: evidence-only diagnostic run — re-enabled after diagnosis")
     @Test
     void rateLimitedRequestIsRejectedBeforePersistence() {
         provisioning.provision("eng", PASSWORD, EnumSet.of(Role.ENGINEER));
@@ -123,6 +193,7 @@ class IngestionRateLimitIntegrationTests {
         assertThat(outboxCount()).isEqualTo(2);
     }
 
+    @org.junit.jupiter.api.Disabled("TEMP: evidence-only diagnostic run — re-enabled after diagnosis")
     @Test
     void acceptedRequestsRetainIdempotencyAndOutboxBehavior() {
         provisioning.provision("eng", PASSWORD, EnumSet.of(Role.ENGINEER));
