@@ -5,6 +5,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import com.forgeops.events.domain.OperationalEventRepository;
 import com.forgeops.events.domain.ProcessingOutcome;
 import com.forgeops.testsupport.PostgresTestContainer;
+import java.sql.Timestamp;
 import java.time.Instant;
 import java.util.UUID;
 import org.junit.jupiter.api.BeforeEach;
@@ -56,7 +57,8 @@ class EventProcessingRepositoryIntegrationTests {
                 VALUES (?::uuid, ?::uuid, ?::uuid, ?::uuid, 'http_5xx', ?, ?, ?::jsonb, ?, ?)
                 """,
                 id.toString(), CLIENT_ID.toString(), SERVICE_ID, ENV_ID,
-                Instant.parse("2026-03-01T00:00:00Z"), Instant.parse("2026-03-01T00:00:01Z"),
+                Timestamp.from(Instant.parse("2026-03-01T00:00:00Z")),
+                Timestamp.from(Instant.parse("2026-03-01T00:00:01Z")),
                 "{\"a\":1}", "hash-" + id, status);
     }
 

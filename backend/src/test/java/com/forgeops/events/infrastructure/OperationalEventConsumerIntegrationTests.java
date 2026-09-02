@@ -6,6 +6,7 @@ import static org.awaitility.Awaitility.await;
 import com.forgeops.testsupport.PostgresTestContainer;
 import com.forgeops.testsupport.RabbitMqTestContainer;
 import java.nio.charset.StandardCharsets;
+import java.sql.Timestamp;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.UUID;
@@ -87,7 +88,8 @@ class OperationalEventConsumerIntegrationTests {
                 VALUES (?::uuid, ?::uuid, ?::uuid, ?::uuid, 'http_5xx', ?, ?, ?::jsonb, ?, 'RECEIVED')
                 """,
                 id.toString(), CLIENT_ID.toString(), SERVICE_ID, ENV_ID,
-                Instant.parse("2026-03-01T00:00:00Z"), Instant.parse("2026-03-01T00:00:01Z"),
+                Timestamp.from(Instant.parse("2026-03-01T00:00:00Z")),
+                Timestamp.from(Instant.parse("2026-03-01T00:00:01Z")),
                 "{\"a\":1}", "hash-" + id);
     }
 
