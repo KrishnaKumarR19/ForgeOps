@@ -23,6 +23,10 @@ import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicInteger;
 import org.junit.jupiter.api.Test;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.TransactionDefinition;
+import org.springframework.transaction.TransactionStatus;
+import org.springframework.transaction.support.SimpleTransactionStatus;
 
 /**
  * Unit tests for {@link EventIngestionService}: first-time acceptance, same-key/same-payload
@@ -86,13 +90,31 @@ class EventIngestionServiceTests {
         }
     };
 
+    /** No-op transaction manager: runs the TransactionTemplate callback with no real tx. */
+    private static final PlatformTransactionManager TX_MANAGER = new PlatformTransactionManager() {
+        @Override
+        public TransactionStatus getTransaction(TransactionDefinition definition) {
+            return new SimpleTransactionStatus();
+        }
+
+        @Override
+        public void commit(TransactionStatus status) {
+            // no-op
+        }
+
+        @Override
+        public void rollback(TransactionStatus status) {
+            // no-op
+        }
+    };
+
     private final InMemoryEvents repo = new InMemoryEvents();
     private final AtomicInteger idSeq = new AtomicInteger();
     private final IdGenerator idGenerator = () ->
             UUID.fromString("018f0000-0000-7000-8000-%012d".formatted(idSeq.incrementAndGet()));
     private final EventIngestionService service = new EventIngestionService(
             repo, REFERENCE_DATA, new PayloadCanonicalizer(), idGenerator,
-            Clock.fixed(now, ZoneOffset.UTC));
+            Clock.fixed(now, ZoneOffset.UTC), TX_MANAGER);
 
     private JsonNode payload(String raw) throws Exception {
         return mapper.readTree(raw);
@@ -187,7 +209,7 @@ class EventIngestionServiceTests {
         };
         EventIngestionService racing = new EventIngestionService(
                 racingRepo, REFERENCE_DATA, new PayloadCanonicalizer(), idGenerator,
-                Clock.fixed(now, ZoneOffset.UTC));
+                Clock.fixed(now, ZoneOffset.UTC), TX_MANAGER);
 
         AcceptedEvent result = racing.ingest(command(ALICE, "key-1", "{\"a\":1}"));
 
@@ -217,7 +239,7 @@ class EventIngestionServiceTests {
         };
         EventIngestionService racing = new EventIngestionService(
                 racingRepo, REFERENCE_DATA, new PayloadCanonicalizer(), idGenerator,
-                Clock.fixed(now, ZoneOffset.UTC));
+                Clock.fixed(now, ZoneOffset.UTC), TX_MANAGER);
 
         assertThatThrownBy(() -> racing.ingest(command(ALICE, "key-1", "{\"a\":1}")))
                 .isInstanceOf(IdempotencyConflictException.class);

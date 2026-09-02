@@ -11,7 +11,8 @@ import java.time.temporal.ChronoUnit;
 import java.util.Optional;
 import java.util.UUID;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 
 /**
  * Accepts operational events (FR-EV-1..4). Acceptance is atomic from the application's view
@@ -47,20 +48,22 @@ public class EventIngestionService {
     private final PayloadCanonicalizer canonicalizer;
     private final IdGenerator idGenerator;
     private final Clock clock;
+    private final TransactionTemplate transactionTemplate;
 
     public EventIngestionService(OperationalEventRepository events,
                                  ReferenceDataRepository referenceData,
                                  PayloadCanonicalizer canonicalizer,
                                  IdGenerator idGenerator,
-                                 Clock clock) {
+                                 Clock clock,
+                                 PlatformTransactionManager transactionManager) {
         this.events = events;
         this.referenceData = referenceData;
         this.canonicalizer = canonicalizer;
         this.idGenerator = idGenerator;
         this.clock = clock;
+        this.transactionTemplate = new TransactionTemplate(transactionManager);
     }
 
-    @Transactional
     public AcceptedEvent ingest(IngestEventCommand command) {
         // Resolve service/environment keys against known reference data (API_CONTRACTS §6);
         // an unknown key is a 422, not a persisted event (INV-SEC-003 — validate at the
@@ -77,8 +80,7 @@ public class EventIngestionService {
 
         // Idempotency pre-check: recognize a retry before attempting an insert.
         if (command.idempotencyKey() != null) {
-            Optional<OperationalEvent> existing = events.findByClientIdAndIdempotencyKey(
-                    command.clientId(), command.idempotencyKey());
+            Optional<OperationalEvent> existing = findExisting(command);
             if (existing.isPresent()) {
                 return resolveExisting(existing.get(), payloadHash);
             }
@@ -86,16 +88,24 @@ public class EventIngestionService {
 
         OperationalEvent toCreate = build(command, serviceId, environmentId, canonicalPayload, payloadHash);
         try {
-            return new AcceptedEvent(events.save(toCreate), false);
+            // Insert in its own transaction so a unique-violation rollback is isolated and
+            // does not poison the recovery read below.
+            OperationalEvent saved = transactionTemplate.execute(status -> events.save(toCreate));
+            return new AcceptedEvent(saved, false);
         } catch (DuplicateIdempotencyKeyException race) {
             // A concurrent request won the (client_id, idempotency_key) race between our
-            // pre-check and insert. Re-read the winner and apply the same rule: same payload
-            // is a replay, different payload is a conflict. Never create a second event.
-            OperationalEvent winner = events
-                    .findByClientIdAndIdempotencyKey(command.clientId(), command.idempotencyKey())
-                    .orElseThrow(() -> race);
+            // pre-check and insert. The failed insert transaction has rolled back; re-read the
+            // winner in a FRESH transaction and apply the same rule (same payload = replay,
+            // different = conflict). Never create a second event.
+            OperationalEvent winner = findExisting(command).orElseThrow(() -> race);
             return resolveExisting(winner, payloadHash);
         }
+    }
+
+    /** Looks up an existing event for the command's client + key in its own transaction. */
+    private Optional<OperationalEvent> findExisting(IngestEventCommand command) {
+        return transactionTemplate.execute(status ->
+                events.findByClientIdAndIdempotencyKey(command.clientId(), command.idempotencyKey()));
     }
 
     private AcceptedEvent resolveExisting(OperationalEvent existing, String payloadHash) {
