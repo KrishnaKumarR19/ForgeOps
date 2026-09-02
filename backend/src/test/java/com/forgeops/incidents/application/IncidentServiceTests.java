@@ -7,12 +7,18 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.forgeops.audit.domain.AuditEntry;
 import com.forgeops.audit.domain.AuditEntryRepository;
 import com.forgeops.common.id.IdGenerator;
+import com.forgeops.incidents.domain.CommentCategory;
 import com.forgeops.incidents.domain.IllegalIncidentTransitionException;
 import com.forgeops.incidents.domain.Incident;
+import com.forgeops.incidents.domain.IncidentAssignment;
+import com.forgeops.incidents.domain.IncidentAssignmentRepository;
+import com.forgeops.incidents.domain.IncidentComment;
+import com.forgeops.incidents.domain.IncidentCommentRepository;
 import com.forgeops.incidents.domain.IncidentRepository;
 import com.forgeops.incidents.domain.IncidentSeverity;
 import com.forgeops.incidents.domain.IncidentState;
 import com.forgeops.incidents.domain.ReferenceDataReader;
+import com.forgeops.incidents.domain.UserExistenceReader;
 import java.time.Clock;
 import java.time.Instant;
 import java.time.ZoneOffset;
@@ -65,6 +71,13 @@ class IncidentServiceTests {
         }
         @Override
         public int updateWithVersionCheck(Incident next, long expectedVersion) {
+            return applyIfCurrent(next, expectedVersion);
+        }
+        @Override
+        public int updateAssigneeWithVersionCheck(Incident next, long expectedVersion) {
+            return applyIfCurrent(next, expectedVersion);
+        }
+        private int applyIfCurrent(Incident next, long expectedVersion) {
             Incident current = byId.get(next.id());
             if (current == null || current.version() != expectedVersion) {
                 return 0; // stale or absent
@@ -102,10 +115,55 @@ class IncidentServiceTests {
     private final IdGenerator idGenerator = () ->
             UUID.fromString("018f5000-0000-7000-8000-%012d".formatted(idSeq.incrementAndGet()));
 
+    /** In-memory append-only assignment history with close-active support. */
+    private static final class InMemoryAssignments implements IncidentAssignmentRepository {
+        final List<IncidentAssignment> all = new ArrayList<>();
+        @Override
+        public IncidentAssignment save(IncidentAssignment a) {
+            all.add(a);
+            return a;
+        }
+        @Override
+        public int closeActive(UUID incidentId, java.time.Instant unassignedAt) {
+            int closed = 0;
+            for (int i = 0; i < all.size(); i++) {
+                IncidentAssignment a = all.get(i);
+                if (a.incidentId().equals(incidentId) && a.unassignedAt() == null) {
+                    all.set(i, new IncidentAssignment(a.id(), a.incidentId(), a.assigneeId(),
+                            a.assignedBy(), a.assignedAt(), unassignedAt, a.team()));
+                    closed++;
+                }
+            }
+            return closed;
+        }
+        @Override
+        public List<IncidentAssignment> findByIncidentId(UUID incidentId) {
+            return all.stream().filter(a -> a.incidentId().equals(incidentId)).toList();
+        }
+    }
+
+    private static final class InMemoryComments implements IncidentCommentRepository {
+        final List<IncidentComment> all = new ArrayList<>();
+        @Override
+        public IncidentComment save(IncidentComment c) {
+            all.add(c);
+            return c;
+        }
+        @Override
+        public List<IncidentComment> findByIncidentId(UUID incidentId) {
+            return all.stream().filter(c -> c.incidentId().equals(incidentId)).toList();
+        }
+    }
+
+    private final UserExistenceReader users = userId -> true; // all users exist in unit tests
+
     private final InMemoryIncidents incidents = new InMemoryIncidents();
+    private final InMemoryAssignments assignments = new InMemoryAssignments();
+    private final InMemoryComments comments = new InMemoryComments();
     private final InMemoryAudit audit = new InMemoryAudit();
     private final IncidentService service = new IncidentService(
-            incidents, audit, referenceData, idGenerator, clock, new ObjectMapper(), TX_MANAGER);
+            incidents, assignments, comments, audit, referenceData, users, idGenerator, clock,
+            new ObjectMapper(), TX_MANAGER);
 
     private CreateIncidentCommand createCommand() {
         return new CreateIncidentCommand("checkout", "production", IncidentSeverity.MAJOR, "t", "sig");
@@ -202,5 +260,112 @@ class IncidentServiceTests {
         assertThat(closed.state()).isEqualTo(IncidentState.CLOSED);
         assertThat(closed.closedAt()).contains(now);
         assertThat(closed.version()).isEqualTo(5L);
+    }
+
+    // ----- assignment ----------------------------------------------------------
+
+    private static final UUID OTHER_USER = UUID.fromString("018f0000-0000-7000-8000-0000000000b2");
+
+    @Test
+    void assignSetsCurrentAssigneeBumpsVersionRecordsHistoryAndAudits() {
+        Incident created = service.create(createCommand(), ACTOR, "c");
+        Incident assigned = service.assign(created.id(), OTHER_USER, "sre", 0L, ACTOR, false, "c");
+
+        assertThat(assigned.currentAssigneeId()).contains(OTHER_USER);
+        assertThat(assigned.version()).isEqualTo(1L);
+        assertThat(assignments.findByIncidentId(created.id())).hasSize(1);
+        IncidentAssignment record = assignments.all.get(0);
+        assertThat(record.assigneeId()).isEqualTo(OTHER_USER);
+        assertThat(record.assignedBy()).isEqualTo(ACTOR); // actor from principal
+        assertThat(record.unassignedAt()).isNull();       // currently active
+        assertThat(audit.entries.get(audit.entries.size() - 1).action()).isEqualTo("INCIDENT_ASSIGNED");
+    }
+
+    @Test
+    void reassignClosesPriorRecordAndAppendsNew() {
+        Incident created = service.create(createCommand(), ACTOR, "c");
+        service.assign(created.id(), OTHER_USER, null, 0L, ACTOR, false, "c");
+        service.assign(created.id(), ACTOR, null, 1L, ACTOR, false, "c");
+
+        List<IncidentAssignment> history = assignments.findByIncidentId(created.id());
+        assertThat(history).hasSize(2); // append-only: prior record kept, not overwritten
+        long active = history.stream().filter(a -> a.unassignedAt() == null).count();
+        assertThat(active).isEqualTo(1); // only the latest is active
+    }
+
+    @Test
+    void unassignClearsAssigneeAndAudits() {
+        Incident created = service.create(createCommand(), ACTOR, "c");
+        service.assign(created.id(), OTHER_USER, null, 0L, ACTOR, false, "c");
+        Incident unassigned = service.unassign(created.id(), 1L, ACTOR, "c");
+
+        assertThat(unassigned.currentAssigneeId()).isEmpty();
+        assertThat(unassigned.version()).isEqualTo(2L);
+        assertThat(audit.entries.get(audit.entries.size() - 1).action()).isEqualTo("INCIDENT_UNASSIGNED");
+    }
+
+    @Test
+    void engineerRestrictedToSelfCannotAssignAnother() {
+        Incident created = service.create(createCommand(), ACTOR, "c");
+        // restrictedToSelf=true and assignee != actor → forbidden.
+        assertThatThrownBy(() -> service.assign(created.id(), OTHER_USER, null, 0L, ACTOR, true, "c"))
+                .isInstanceOf(ForbiddenAssignmentException.class);
+        assertThat(incidents.byId.get(created.id()).currentAssigneeId()).isEmpty(); // unchanged
+    }
+
+    @Test
+    void engineerRestrictedToSelfCanAssignThemselves() {
+        Incident created = service.create(createCommand(), ACTOR, "c");
+        Incident assigned = service.assign(created.id(), ACTOR, null, 0L, ACTOR, true, "c");
+        assertThat(assigned.currentAssigneeId()).contains(ACTOR);
+    }
+
+    @Test
+    void assignUnknownUserIsRejected() {
+        IncidentService svc = new IncidentService(incidents, assignments, comments, audit,
+                referenceData, userId -> false, idGenerator, clock, new ObjectMapper(), TX_MANAGER);
+        Incident created = svc.create(createCommand(), ACTOR, "c");
+        assertThatThrownBy(() -> svc.assign(created.id(), OTHER_USER, null, 0L, ACTOR, false, "c"))
+                .isInstanceOf(UnknownReferenceException.class);
+    }
+
+    @Test
+    void staleAssignmentIsRejectedAndWritesNoHistory() {
+        Incident created = service.create(createCommand(), ACTOR, "c");
+        service.assign(created.id(), OTHER_USER, null, 0L, ACTOR, false, "c"); // version -> 1
+        assertThatThrownBy(() -> service.assign(created.id(), ACTOR, null, 0L, ACTOR, false, "c"))
+                .isInstanceOf(StaleIncidentVersionException.class);
+        assertThat(assignments.findByIncidentId(created.id())).hasSize(1); // no new record
+    }
+
+    // ----- comments ------------------------------------------------------------
+
+    @Test
+    void addCommentPersistsAndAuditsWithoutVersionBump() {
+        Incident created = service.create(createCommand(), ACTOR, "c");
+        IncidentComment comment = service.addComment(created.id(), "looking into it",
+                CommentCategory.INVESTIGATION, ACTOR, "c");
+
+        assertThat(comment.body()).isEqualTo("looking into it");
+        assertThat(comment.categoryValue()).contains(CommentCategory.INVESTIGATION);
+        assertThat(comments.findByIncidentId(created.id())).hasSize(1);
+        // Comment does not change the incident version (§11).
+        assertThat(incidents.byId.get(created.id()).version()).isZero();
+        assertThat(audit.entries.get(audit.entries.size() - 1).action()).isEqualTo("INCIDENT_COMMENTED");
+    }
+
+    @Test
+    void addCommentToUnknownIncidentThrows() {
+        assertThatThrownBy(() -> service.addComment(
+                UUID.fromString("018f5000-0000-7000-8000-0000000000ff"), "x", null, ACTOR, "c"))
+                .isInstanceOf(IncidentNotFoundException.class);
+    }
+
+    @Test
+    void listCommentsReturnsAppendedComments() {
+        Incident created = service.create(createCommand(), ACTOR, "c");
+        service.addComment(created.id(), "first", null, ACTOR, "c");
+        service.addComment(created.id(), "second", CommentCategory.NOTE, ACTOR, "c");
+        assertThat(service.listComments(created.id())).hasSize(2);
     }
 }

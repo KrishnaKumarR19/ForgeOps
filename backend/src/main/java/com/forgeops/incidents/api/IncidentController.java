@@ -2,23 +2,29 @@ package com.forgeops.incidents.api;
 
 import com.forgeops.common.correlation.CorrelationIdFilter;
 import com.forgeops.incidents.application.CreateIncidentCommand;
+import com.forgeops.incidents.application.ForbiddenAssignmentException;
 import com.forgeops.incidents.application.IncidentNotFoundException;
 import com.forgeops.incidents.application.IncidentService;
 import com.forgeops.incidents.application.StaleIncidentVersionException;
 import com.forgeops.incidents.application.UnknownReferenceException;
+import com.forgeops.incidents.domain.CommentCategory;
 import com.forgeops.incidents.domain.Incident;
+import com.forgeops.incidents.domain.IncidentComment;
 import com.forgeops.incidents.domain.IncidentSeverity;
 import com.forgeops.incidents.domain.IllegalIncidentTransitionException;
 import com.forgeops.incidents.domain.ReferenceDataReader;
 import com.forgeops.identity.application.AuthenticatedUser;
+import com.forgeops.identity.domain.Role;
 import jakarta.validation.Valid;
 import java.net.URI;
+import java.util.List;
 import java.util.UUID;
 import org.slf4j.MDC;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ProblemDetail;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
+import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -125,7 +131,82 @@ class IncidentController {
         return ok(updated);
     }
 
+    @PostMapping("/{id}/assignment")
+    ResponseEntity<IncidentResponse> assign(@AuthenticationPrincipal AuthenticatedUser principal,
+                                            @PathVariable("id") UUID id,
+                                            @RequestHeader(value = "If-Match", required = false) String ifMatch,
+                                            @Valid @RequestBody AssignIncidentRequest request) {
+        UUID assigneeId = parseUuid(request.assigneeId());
+        // ENGINEER (without ADMIN/INCIDENT_MANAGER) may self-assign only; the content-dependent
+        // rule is enforced in the service (INV-SEC-005). URL RBAC already blocked VIEWER.
+        boolean restrictedToSelf = isEngineerOnly(principal);
+        Incident updated = incidentService.assign(id, assigneeId, emptyToNull(request.team()),
+                requireVersion(ifMatch), principal.userId(), restrictedToSelf, correlationId());
+        return ok(updated);
+    }
+
+    @DeleteMapping("/{id}/assignment")
+    ResponseEntity<IncidentResponse> unassign(@AuthenticationPrincipal AuthenticatedUser principal,
+                                              @PathVariable("id") UUID id,
+                                              @RequestHeader(value = "If-Match", required = false) String ifMatch) {
+        Incident updated = incidentService.unassign(id, requireVersion(ifMatch), principal.userId(), correlationId());
+        return ok(updated);
+    }
+
+    @PostMapping("/{id}/comments")
+    ResponseEntity<CommentResponse> addComment(@AuthenticationPrincipal AuthenticatedUser principal,
+                                               @PathVariable("id") UUID id,
+                                               @Valid @RequestBody AddCommentRequest request) {
+        IncidentComment comment = incidentService.addComment(id, request.body(),
+                parseCategory(request.category()), principal.userId(), correlationId());
+        return ResponseEntity.created(URI.create("/api/v1/incidents/" + id + "/comments/" + comment.id()))
+                .body(toCommentResponse(comment));
+    }
+
+    @GetMapping("/{id}/comments")
+    ResponseEntity<List<CommentResponse>> listComments(@PathVariable("id") UUID id) {
+        List<CommentResponse> body = incidentService.listComments(id).stream()
+                .map(IncidentController::toCommentResponse)
+                .toList();
+        return ResponseEntity.ok(body);
+    }
+
     // --- helpers ----------------------------------------------------------------------------
+
+    /** True when the caller is an ENGINEER without ADMIN/INCIDENT_MANAGER (self-assign only). */
+    private static boolean isEngineerOnly(AuthenticatedUser principal) {
+        return principal.roles().contains(Role.ENGINEER)
+                && !principal.roles().contains(Role.ADMIN)
+                && !principal.roles().contains(Role.INCIDENT_MANAGER);
+    }
+
+    private static CommentResponse toCommentResponse(IncidentComment c) {
+        return new CommentResponse(
+                c.id().toString(),
+                c.authorId().toString(),
+                c.categoryValue().map(Enum::name).orElse(null),
+                c.body(),
+                c.createdAt());
+    }
+
+    private static UUID parseUuid(String value) {
+        try {
+            return UUID.fromString(value);
+        } catch (IllegalArgumentException e) {
+            throw new IllegalArgumentException("Invalid UUID: " + value);
+        }
+    }
+
+    private static CommentCategory parseCategory(String category) {
+        if (category == null || category.isBlank()) {
+            return null;
+        }
+        try {
+            return CommentCategory.valueOf(category);
+        } catch (IllegalArgumentException e) {
+            throw new IllegalArgumentException("Unknown comment category: " + category);
+        }
+    }
 
     private ResponseEntity<IncidentResponse> ok(Incident incident) {
         return ResponseEntity.ok().eTag(etag(incident)).body(toResponse(incident));
@@ -220,10 +301,16 @@ class IncidentController {
                 "This mutation requires an If-Match header carrying the incident's current ETag.");
     }
 
-    /** Unknown service/environment reference → 422. */
+    /** Unknown service/environment/assignee reference → 422. */
     @ExceptionHandler(UnknownReferenceException.class)
     ProblemDetail handleUnknownReference(UnknownReferenceException ex) {
         return problem(HttpStatus.UNPROCESSABLE_ENTITY, "Unknown reference", ex.getMessage());
+    }
+
+    /** Content-dependent authorization failure (e.g. ENGINEER assigning another user) → 403. */
+    @ExceptionHandler(ForbiddenAssignmentException.class)
+    ProblemDetail handleForbiddenAssignment(ForbiddenAssignmentException ex) {
+        return problem(HttpStatus.FORBIDDEN, "Forbidden", ex.getMessage());
     }
 
     /** Invalid field value (e.g. severity) → 400. */

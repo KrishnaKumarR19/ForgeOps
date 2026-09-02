@@ -38,4 +38,13 @@ public interface IncidentRepository {
      *         no longer matches (stale) or the row is absent
      */
     int updateWithVersionCheck(Incident next, long expectedVersion);
+
+    /**
+     * Assignment-specific optimistic-lock compare-and-set (Phase 7 Slice 3, INV-INC-005): updates
+     * the incident's {@code current_assignee_id} and {@code version} only if the stored row still
+     * has {@code expectedVersion}. {@code next.currentAssigneeId()} is the new assignee (empty for
+     * unassign). Returns 1 if applied, 0 if stale/absent. Must run inside the caller's transaction
+     * (alongside the assignment-history insert and audit entry).
+     */
+    int updateAssigneeWithVersionCheck(Incident next, long expectedVersion);
 }

@@ -77,6 +77,19 @@ public class SecurityConfig {
                                 "/api/v1/incidents/*/resolve",
                                 "/api/v1/incidents/*/severity")
                             .hasAnyRole("ADMIN", "ENGINEER", "INCIDENT_MANAGER")
+                        // Assignment (Phase 7 Slice 3, API_CONTRACTS.md §12). Assign/reassign:
+                        // ADMIN/INCIDENT_MANAGER, plus ENGINEER (self-assign only — the
+                        // content-dependent self rule is enforced in the service). Unassign:
+                        // INCIDENT_MANAGER/ADMIN only.
+                        .requestMatchers(HttpMethod.POST, "/api/v1/incidents/*/assignment")
+                            .hasAnyRole("ADMIN", "ENGINEER", "INCIDENT_MANAGER")
+                        .requestMatchers(HttpMethod.DELETE, "/api/v1/incidents/*/assignment")
+                            .hasAnyRole("ADMIN", "INCIDENT_MANAGER")
+                        // Comments (Phase 7 Slice 3, API_CONTRACTS.md §13). Add: ADMIN/ENGINEER/
+                        // INCIDENT_MANAGER (VIEWER denied). List: any authenticated reader (the
+                        // broader GET rule below covers it).
+                        .requestMatchers(HttpMethod.POST, "/api/v1/incidents/*/comments")
+                            .hasAnyRole("ADMIN", "ENGINEER", "INCIDENT_MANAGER")
                         .requestMatchers(HttpMethod.POST, "/api/v1/incidents")
                             .hasAnyRole("ADMIN", "ENGINEER", "INCIDENT_MANAGER")
                         .requestMatchers(HttpMethod.GET, "/api/v1/incidents/**")

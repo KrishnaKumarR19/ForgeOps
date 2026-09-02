@@ -43,6 +43,15 @@ class JpaIncidentRepository implements IncidentRepository {
                 next.closedAt().orElse(null));
     }
 
+    @Override
+    public int updateAssigneeWithVersionCheck(Incident next, long expectedVersion) {
+        return jpa.updateAssigneeWithVersionCheck(
+                next.id(),
+                expectedVersion,
+                next.version(),
+                next.currentAssigneeId().orElse(null));
+    }
+
     private static IncidentEntity toEntity(Incident i) {
         return new IncidentEntity(
                 i.id(),

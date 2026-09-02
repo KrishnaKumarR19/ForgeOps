@@ -40,4 +40,21 @@ interface SpringDataIncidentJpaRepository extends JpaRepository<IncidentEntity, 
                                @Param("severity") String severity,
                                @Param("resolvedAt") Instant resolvedAt,
                                @Param("closedAt") Instant closedAt);
+
+    /**
+     * Assignment compare-and-set (Phase 7 Slice 3, INV-INC-005): sets {@code current_assignee_id}
+     * (may be NULL for unassign) and {@code version} only if the stored {@code version} matches
+     * {@code expectedVersion}. Returns rows updated (1 = applied, 0 = stale/absent).
+     */
+    @Modifying
+    @Query(value = """
+            UPDATE incidents
+            SET current_assignee_id = :assigneeId,
+                version = :newVersion
+            WHERE id = :id AND version = :expectedVersion
+            """, nativeQuery = true)
+    int updateAssigneeWithVersionCheck(@Param("id") UUID id,
+                                       @Param("expectedVersion") long expectedVersion,
+                                       @Param("newVersion") long newVersion,
+                                       @Param("assigneeId") UUID assigneeId);
 }

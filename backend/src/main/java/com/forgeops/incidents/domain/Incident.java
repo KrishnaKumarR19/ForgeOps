@@ -208,6 +208,33 @@ public final class Incident {
                 state, currentAssigneeId, version + 1, createdAt, resolvedAt, closedAt);
     }
 
+    /**
+     * Assigns the incident to {@code assigneeId} (Phase 7 Slice 3, FR-IN-4). Assignment is an
+     * incident mutation: it updates the current assignee and increments {@code version} (so it
+     * participates in optimistic concurrency, §11). Not permitted once {@code CLOSED} (terminal).
+     * The authoritative assignment history is recorded separately by the application layer.
+     */
+    public Incident assignTo(UUID assigneeId, Instant now) {
+        requireNonNull(assigneeId, "assigneeId");
+        if (state == IncidentState.CLOSED) {
+            throw new IllegalIncidentTransitionException(state, "assign");
+        }
+        return withAssignee(assigneeId);
+    }
+
+    /** Clears the current assignee (unassign). An incident mutation; not permitted once CLOSED. */
+    public Incident unassign(Instant now) {
+        if (state == IncidentState.CLOSED) {
+            throw new IllegalIncidentTransitionException(state, "unassign");
+        }
+        return withAssignee(null);
+    }
+
+    private Incident withAssignee(UUID newAssigneeId) {
+        return new Incident(id, title, serviceId, environmentId, failureSignature, severity,
+                state, newAssigneeId, version + 1, createdAt, resolvedAt, closedAt);
+    }
+
     private void requireState(IncidentState required, String command) {
         if (state != required) {
             throw new IllegalIncidentTransitionException(state, command);
