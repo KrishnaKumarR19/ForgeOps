@@ -57,6 +57,10 @@ class IngestionRateLimitIntegrationTests {
     private UserProvisioningService provisioning;
     @Autowired
     private JdbcTemplate jdbcTemplate;
+    @Autowired
+    private com.forgeops.events.application.RateLimitProperties rateLimitProperties;
+    @Autowired
+    private org.springframework.context.ApplicationContext applicationContext;
 
     private TestRestTemplate rest;
 
@@ -102,18 +106,32 @@ class IngestionRateLimitIntegrationTests {
 
     @Test
     void rateLimitedRequestIsRejectedBeforePersistence() {
+        // Diagnostic context surfaced in any assertion failure (CI logs are not otherwise
+        // accessible): the effective bound config and whether the rate-limit wiring is present.
+        boolean webConfigPresent = !applicationContext
+                .getBeansOfType(RateLimitWebConfig.class).isEmpty();
+        boolean limiterPresent = !applicationContext
+                .getBeansOfType(com.forgeops.events.application.RateLimiter.class).isEmpty();
+        String diag = "effectiveLimit=" + rateLimitProperties.limit()
+                + " enabled=" + rateLimitProperties.isEnabled()
+                + " window=" + rateLimitProperties.window()
+                + " rateLimitWebConfigBean=" + webConfigPresent
+                + " rateLimiterBean=" + limiterPresent;
+
         provisioning.provision("eng", PASSWORD, EnumSet.of(Role.ENGINEER));
         String token = login("eng");
 
         // Two under-limit submissions succeed and persist (+ their outbox rows).
-        assertThat(submit(token, 1).getStatusCode()).isEqualTo(HttpStatus.ACCEPTED);
-        assertThat(submit(token, 2).getStatusCode()).isEqualTo(HttpStatus.ACCEPTED);
-        assertThat(eventCount()).isEqualTo(2);
-        assertThat(outboxCount()).isEqualTo(2);
+        assertThat(submit(token, 1).getStatusCode()).as(diag).isEqualTo(HttpStatus.ACCEPTED);
+        assertThat(submit(token, 2).getStatusCode()).as(diag).isEqualTo(HttpStatus.ACCEPTED);
+        assertThat(eventCount()).as(diag).isEqualTo(2);
+        assertThat(outboxCount()).as(diag).isEqualTo(2);
 
         // The third exceeds the limit → 429 with Retry-After, and NOTHING is persisted for it.
         ResponseEntity<String> limited = submit(token, 3);
-        assertThat(limited.getStatusCode()).isEqualTo(HttpStatus.TOO_MANY_REQUESTS);
+        assertThat(limited.getStatusCode())
+                .as(diag + " thirdBody=" + limited.getBody())
+                .isEqualTo(HttpStatus.TOO_MANY_REQUESTS);
         assertThat(limited.getHeaders().getContentType()).isEqualTo(MediaType.APPLICATION_PROBLEM_JSON);
         assertThat(limited.getHeaders().getFirst("Retry-After")).isNotBlank();
 
