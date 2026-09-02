@@ -69,6 +69,12 @@ forgeops:
       retention: ${FORGEOPS_OUTBOX_CLEANUP_RETENTION:PT168H}
       fixed-delay: ${FORGEOPS_OUTBOX_CLEANUP_FIXED_DELAY:PT1H}
       batch-size: ${FORGEOPS_OUTBOX_CLEANUP_BATCH_SIZE:500}
+  # Incident detection/correlation (Phase 7 Slice 4). Sliding correlation window on the event's
+  # server-side received_at within which a new event correlates to an existing active incident;
+  # otherwise a new incident is created. ForgeOps v1: 30 minutes.
+  incidents:
+    detection:
+      correlation-window: ${FORGEOPS_INCIDENT_CORRELATION_WINDOW:PT30M}
   events:
     rabbitmq:
       exchange: ${FORGEOPS_EVENTS_EXCHANGE:forgeops.events}

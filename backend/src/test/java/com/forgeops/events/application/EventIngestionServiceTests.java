@@ -82,6 +82,14 @@ class EventIngestionServiceTests {
                     ? com.forgeops.events.domain.ProcessingOutcome.MARKED
                     : com.forgeops.events.domain.ProcessingOutcome.NOT_FOUND;
         }
+
+        @Override
+        public com.forgeops.events.domain.ProcessingOutcome associateIncidentAndMarkProcessed(
+                UUID id, UUID incidentId) {
+            return findById(id).isPresent()
+                    ? com.forgeops.events.domain.ProcessingOutcome.MARKED
+                    : com.forgeops.events.domain.ProcessingOutcome.NOT_FOUND;
+        }
     }
 
     private static final UUID SERVICE_ID = UUID.fromString("018f1000-0000-7000-8000-000000000001");

@@ -76,6 +76,15 @@ class JpaOperationalEventRepository implements OperationalEventRepository {
         return jpa.existsById(id) ? ProcessingOutcome.ALREADY_PROCESSED : ProcessingOutcome.NOT_FOUND;
     }
 
+    @Override
+    public ProcessingOutcome associateIncidentAndMarkProcessed(UUID id, UUID incidentId) {
+        int updated = jpa.associateIncidentAndMarkProcessed(id, incidentId);
+        if (updated == 1) {
+            return ProcessingOutcome.MARKED;
+        }
+        return jpa.existsById(id) ? ProcessingOutcome.ALREADY_PROCESSED : ProcessingOutcome.NOT_FOUND;
+    }
+
     private static OperationalEventEntity toEntity(OperationalEvent e) {
         return new OperationalEventEntity(
                 e.id(),

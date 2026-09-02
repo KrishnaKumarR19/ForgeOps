@@ -3,8 +3,16 @@ package com.forgeops.events.application;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import com.forgeops.events.domain.EventSeverity;
+import com.forgeops.events.domain.EventStatus;
+import com.forgeops.events.domain.OperationalEvent;
 import com.forgeops.events.domain.OperationalEventRepository;
 import com.forgeops.events.domain.ProcessingOutcome;
+import com.forgeops.incidents.application.DetectionResult;
+import com.forgeops.incidents.application.IncidentDetectionPort;
+import com.forgeops.incidents.application.InvalidDetectionDataException;
+import com.forgeops.incidents.domain.DetectionContext;
+import java.time.Instant;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Optional;
@@ -17,15 +25,14 @@ import org.springframework.transaction.TransactionStatus;
 import org.springframework.transaction.support.SimpleTransactionStatus;
 
 /**
- * Unit tests for {@link EventProcessingService}: the idempotent processing effect
- * (RECEIVED → PROCESSED), the duplicate-delivery no-op (ALREADY_PROCESSED), poison-message
- * handling (NOT_FOUND → {@link NonRetryableEventProcessingException}), and propagation of
- * transient failures. Uses an in-memory repository and a no-op transaction manager; no
- * database. Synthetic data.
+ * Unit tests for {@link EventProcessingService} with detection integrated (Phase 7 Slice 4):
+ * a RECEIVED event runs detection/correlation then is associated + marked PROCESSED; a duplicate
+ * delivery of an already-PROCESSED event is a no-op (no detection); an unknown event is a poison
+ * message (NOT_FOUND → {@link NonRetryableEventProcessingException}); invalid detection data is
+ * also poison; and a transient detection failure propagates for retry. In-memory fakes; no DB.
  */
 class EventProcessingServiceTests {
 
-    /** Executes the callback synchronously so the service's TransactionTemplate works. */
     private static final PlatformTransactionManager TX_MANAGER = new PlatformTransactionManager() {
         public TransactionStatus getTransaction(TransactionDefinition d) {
             return new SimpleTransactionStatus();
@@ -34,118 +41,135 @@ class EventProcessingServiceTests {
         public void rollback(TransactionStatus s) { }
     };
 
-    /** In-memory event store recording status transitions via a conditional markProcessed. */
+    private static final UUID EVENT_ID = UUID.fromString("018f3000-0000-7000-8000-000000000001");
+    private static final UUID SERVICE_ID = UUID.fromString("018f1000-0000-7000-8000-000000000001");
+    private static final UUID ENV_ID = UUID.fromString("018f1001-0000-7000-8000-000000000001");
+    private static final UUID INCIDENT_ID = UUID.fromString("018f5000-0000-7000-8000-000000000009");
+    private static final Instant NOW = Instant.parse("2026-03-20T00:00:00Z");
+
+    /** In-memory event store; models the conditional associate+process guard. */
     private static final class InMemoryEvents implements OperationalEventRepository {
-        // eventId -> status ("RECEIVED" | "PROCESSED"); absence = NOT_FOUND.
-        final Map<UUID, String> status = new LinkedHashMap<>();
-        final AtomicInteger markCalls = new AtomicInteger();
+        final Map<UUID, OperationalEvent> byId = new LinkedHashMap<>();
+        UUID associatedIncidentId;
 
         @Override
-        public com.forgeops.events.domain.OperationalEvent save(com.forgeops.events.domain.OperationalEvent e) {
-            throw new UnsupportedOperationException("not used");
+        public OperationalEvent save(OperationalEvent e) {
+            byId.put(e.id(), e);
+            return e;
         }
-
         @Override
-        public Optional<com.forgeops.events.domain.OperationalEvent> findById(UUID id) {
-            throw new UnsupportedOperationException("not used");
+        public Optional<OperationalEvent> findById(UUID id) {
+            return Optional.ofNullable(byId.get(id));
         }
-
         @Override
-        public Optional<com.forgeops.events.domain.OperationalEvent> findByClientIdAndIdempotencyKey(
-                UUID clientId, String idempotencyKey) {
-            throw new UnsupportedOperationException("not used");
+        public Optional<OperationalEvent> findByClientIdAndIdempotencyKey(UUID c, String k) {
+            return Optional.empty();
         }
-
         @Override
         public ProcessingOutcome markProcessed(UUID id) {
-            markCalls.incrementAndGet();
-            String current = status.get(id);
-            if (current == null) {
+            throw new UnsupportedOperationException("detection path uses associateIncidentAndMarkProcessed");
+        }
+        @Override
+        public ProcessingOutcome associateIncidentAndMarkProcessed(UUID id, UUID incidentId) {
+            OperationalEvent e = byId.get(id);
+            if (e == null) {
                 return ProcessingOutcome.NOT_FOUND;
             }
-            if ("RECEIVED".equals(current)) {
-                status.put(id, "PROCESSED"); // the atomic conditional transition
-                return ProcessingOutcome.MARKED;
+            if (e.status() != EventStatus.RECEIVED) {
+                return ProcessingOutcome.ALREADY_PROCESSED;
             }
-            return ProcessingOutcome.ALREADY_PROCESSED;
+            associatedIncidentId = incidentId;
+            byId.put(id, processed(e, incidentId));
+            return ProcessingOutcome.MARKED;
         }
     }
 
-    /** Repository that always throws, to prove transient failures propagate (→ retry). */
-    private static final class FailingEvents implements OperationalEventRepository {
+    /** Detection port fake recording invocations and returning a fixed incident. */
+    private static final class FakeDetection implements IncidentDetectionPort {
+        final AtomicInteger calls = new AtomicInteger();
+        DetectionContext lastContext;
         @Override
-        public com.forgeops.events.domain.OperationalEvent save(com.forgeops.events.domain.OperationalEvent e) {
-            throw new UnsupportedOperationException();
-        }
-        @Override
-        public Optional<com.forgeops.events.domain.OperationalEvent> findById(UUID id) {
-            throw new UnsupportedOperationException();
-        }
-        @Override
-        public Optional<com.forgeops.events.domain.OperationalEvent> findByClientIdAndIdempotencyKey(
-                UUID clientId, String idempotencyKey) {
-            throw new UnsupportedOperationException();
-        }
-        @Override
-        public ProcessingOutcome markProcessed(UUID id) {
-            throw new RuntimeException("transient database failure");
+        public DetectionResult correlateOrCreate(DetectionContext context) {
+            calls.incrementAndGet();
+            lastContext = context;
+            return new DetectionResult(INCIDENT_ID, true);
         }
     }
 
-    private static final UUID EVENT_ID = UUID.fromString("018f3000-0000-7000-8000-000000000001");
+    private static OperationalEvent received(EventStatus status) {
+        return new OperationalEvent(EVENT_ID, UUID.randomUUID(), null, null, SERVICE_ID, "checkout",
+                ENV_ID, "production", "http_5xx", EventSeverity.MAJOR, "sig", NOW, NOW,
+                "{\"a\":1}", "hash", status, null);
+    }
+
+    private static OperationalEvent processed(OperationalEvent e, UUID incidentId) {
+        return new OperationalEvent(e.id(), e.clientId(), e.producerEventId().orElse(null),
+                e.idempotencyKey().orElse(null), e.serviceId(), e.service(), e.environmentId(),
+                e.environment(), e.eventType(), e.severity().orElse(null),
+                e.failureSignature().orElse(null), e.occurredAt(), e.receivedAt(), e.payload(),
+                e.payloadHash(), EventStatus.PROCESSED, incidentId);
+    }
 
     private final InMemoryEvents events = new InMemoryEvents();
-    private final EventProcessingService service = new EventProcessingService(events, TX_MANAGER);
+    private final FakeDetection detection = new FakeDetection();
+    private final EventProcessingService service =
+            new EventProcessingService(events, detection, TX_MANAGER);
 
     @Test
-    void receivedEventIsMarkedProcessed() {
-        events.status.put(EVENT_ID, "RECEIVED");
+    void receivedEventRunsDetectionAndIsAssociatedAndProcessed() {
+        events.save(received(EventStatus.RECEIVED));
 
         ProcessingOutcome outcome = service.process(EVENT_ID);
 
         assertThat(outcome).isEqualTo(ProcessingOutcome.MARKED);
-        assertThat(events.status.get(EVENT_ID)).isEqualTo("PROCESSED");
+        assertThat(detection.calls.get()).isEqualTo(1);
+        assertThat(events.associatedIncidentId).isEqualTo(INCIDENT_ID);
+        assertThat(events.byId.get(EVENT_ID).status()).isEqualTo(EventStatus.PROCESSED);
+        assertThat(events.byId.get(EVENT_ID).incidentId()).contains(INCIDENT_ID);
+        // DetectionContext carried the event's correlation fields.
+        assertThat(detection.lastContext.serviceId()).isEqualTo(SERVICE_ID);
+        assertThat(detection.lastContext.failureSignature()).isEqualTo("sig");
     }
 
     @Test
-    void alreadyProcessedEventIsANoOp() {
-        events.status.put(EVENT_ID, "PROCESSED");
+    void alreadyProcessedEventIsANoOpWithNoDetection() {
+        events.save(received(EventStatus.PROCESSED));
 
         ProcessingOutcome outcome = service.process(EVENT_ID);
 
         assertThat(outcome).isEqualTo(ProcessingOutcome.ALREADY_PROCESSED);
-        assertThat(events.status.get(EVENT_ID)).isEqualTo("PROCESSED"); // unchanged
+        assertThat(detection.calls.get()).isZero(); // no detection for a duplicate delivery
     }
 
     @Test
-    void duplicateDeliveryAppliesEffectExactlyOnce() {
-        events.status.put(EVENT_ID, "RECEIVED");
-
-        ProcessingOutcome first = service.process(EVENT_ID);
-        ProcessingOutcome second = service.process(EVENT_ID);
-        ProcessingOutcome third = service.process(EVENT_ID);
-
-        assertThat(first).isEqualTo(ProcessingOutcome.MARKED);
-        assertThat(second).isEqualTo(ProcessingOutcome.ALREADY_PROCESSED);
-        assertThat(third).isEqualTo(ProcessingOutcome.ALREADY_PROCESSED);
-        assertThat(events.status.get(EVENT_ID)).isEqualTo("PROCESSED");
-    }
-
-    @Test
-    void unknownEventIsNonRetryablePoisonMessage() {
-        // No event stored → NOT_FOUND → dead-letter, not retry.
+    void unknownEventIsNonRetryablePoison() {
         assertThatThrownBy(() -> service.process(EVENT_ID))
-                .isInstanceOf(NonRetryableEventProcessingException.class)
-                .hasMessageContaining(EVENT_ID.toString());
+                .isInstanceOf(NonRetryableEventProcessingException.class);
+        assertThat(detection.calls.get()).isZero();
     }
 
     @Test
-    void transientFailurePropagatesForRetry() {
-        EventProcessingService failing = new EventProcessingService(new FailingEvents(), TX_MANAGER);
+    void invalidDetectionDataIsNonRetryablePoison() {
+        events.save(received(EventStatus.RECEIVED));
+        IncidentDetectionPort poison = context -> {
+            throw new InvalidDetectionDataException("no usable signature");
+        };
+        EventProcessingService svc = new EventProcessingService(events, poison, TX_MANAGER);
 
-        // A transient failure is NOT a NonRetryableEventProcessingException, so the consumer's
-        // retry policy will retry it rather than dead-letter immediately.
-        assertThatThrownBy(() -> failing.process(EVENT_ID))
+        assertThatThrownBy(() -> svc.process(EVENT_ID))
+                .isInstanceOf(NonRetryableEventProcessingException.class);
+        assertThat(events.byId.get(EVENT_ID).status()).isEqualTo(EventStatus.RECEIVED); // unchanged
+    }
+
+    @Test
+    void transientDetectionFailurePropagatesForRetry() {
+        events.save(received(EventStatus.RECEIVED));
+        IncidentDetectionPort failing = context -> {
+            throw new RuntimeException("transient detection failure");
+        };
+        EventProcessingService svc = new EventProcessingService(events, failing, TX_MANAGER);
+
+        assertThatThrownBy(() -> svc.process(EVENT_ID))
                 .isInstanceOf(RuntimeException.class)
                 .isNotInstanceOf(NonRetryableEventProcessingException.class)
                 .hasMessageContaining("transient");

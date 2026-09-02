@@ -85,6 +85,12 @@ class IncidentServiceTests {
             byId.put(next.id(), next);
             return 1;
         }
+        @Override
+        public Optional<Incident> findActiveMatch(UUID serviceId, UUID environmentId,
+                                                  String signature, java.time.Instant receivedAt,
+                                                  java.time.Duration window) {
+            return Optional.empty(); // detection not exercised by IncidentService unit tests
+        }
     }
 
     private static final class InMemoryAudit implements AuditEntryRepository {

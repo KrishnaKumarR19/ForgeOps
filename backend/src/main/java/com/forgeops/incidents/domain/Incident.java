@@ -84,6 +84,22 @@ public final class Incident {
     }
 
     /**
+     * Factory for a detection-created incident (Phase 7 Slice 4): identical shape to a manually
+     * opened incident ({@link IncidentState#OPEN}, {@code version = 0}, unassigned), created by
+     * the SYSTEM actor. The {@code failureSignature} is the normalized correlation signature.
+     */
+    public static Incident detected(UUID id,
+                                    String title,
+                                    UUID serviceId,
+                                    UUID environmentId,
+                                    String failureSignature,
+                                    IncidentSeverity severity,
+                                    Instant createdAt) {
+        return new Incident(id, title, serviceId, environmentId, failureSignature, severity,
+                IncidentState.OPEN, null, 0L, createdAt, null, null);
+    }
+
+    /**
      * Factory for a freshly created incident: {@link IncidentState#OPEN}, {@code version = 0},
      * not yet resolved or closed. Used by both manual creation and (later) detection — a newly
      * created incident always starts OPEN (DOMAIN_MODEL.md §10). The id is supplied by the

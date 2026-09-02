@@ -35,4 +35,17 @@ interface SpringDataOperationalEventJpaRepository extends JpaRepository<Operatio
             WHERE id = :id AND status = 'RECEIVED'
             """, nativeQuery = true)
     int markProcessed(@Param("id") UUID id);
+
+    /**
+     * Conditional associate-and-process (Phase 7 Slice 4): sets {@code incident_id} and flips
+     * {@code status} to PROCESSED only while still RECEIVED, in one statement. Returns rows
+     * affected (1 = applied, 0 = not RECEIVED/absent).
+     */
+    @Modifying
+    @Query(value = """
+            UPDATE operational_events
+            SET status = 'PROCESSED', incident_id = :incidentId
+            WHERE id = :id AND status = 'RECEIVED'
+            """, nativeQuery = true)
+    int associateIncidentAndMarkProcessed(@Param("id") UUID id, @Param("incidentId") UUID incidentId);
 }

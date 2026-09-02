@@ -57,4 +57,28 @@ interface SpringDataIncidentJpaRepository extends JpaRepository<IncidentEntity, 
                                        @Param("expectedVersion") long expectedVersion,
                                        @Param("newVersion") long newVersion,
                                        @Param("assigneeId") UUID assigneeId);
+
+    /**
+     * Active-incident correlation match (Phase 7 Slice 4). Same service/environment/signature, an
+     * ACTIVE state, and the sliding window expressed as bounds on {@code created_at}:
+     * {@code windowStart <= created_at <= receivedAt} (equivalent to
+     * {@code created_at <= receivedAt <= created_at + window}, with no future-created incidents).
+     * Newest wins. {@code LIMIT 1}.
+     */
+    @Query(value = """
+            SELECT * FROM incidents
+            WHERE service_id = :serviceId
+              AND environment_id = :environmentId
+              AND failure_signature = :signature
+              AND state IN ('OPEN', 'ACKNOWLEDGED', 'INVESTIGATING', 'MITIGATED')
+              AND created_at <= :receivedAt
+              AND created_at >= :windowStart
+            ORDER BY created_at DESC, id DESC
+            LIMIT 1
+            """, nativeQuery = true)
+    IncidentEntity findActiveMatch(@Param("serviceId") UUID serviceId,
+                                   @Param("environmentId") UUID environmentId,
+                                   @Param("signature") String signature,
+                                   @Param("receivedAt") Instant receivedAt,
+                                   @Param("windowStart") Instant windowStart);
 }

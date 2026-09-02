@@ -50,4 +50,21 @@ public interface OperationalEventRepository {
      *         {@code NOT_FOUND} when no such event exists
      */
     ProcessingOutcome markProcessed(UUID id);
+
+    /**
+     * Atomically associates the event with {@code incidentId} <em>and</em> marks it
+     * {@code PROCESSED}, but <em>only</em> if it is currently {@code RECEIVED} (Phase 7 Slice 4).
+     * A single conditional {@code UPDATE ... SET incident_id = ?, status = 'PROCESSED' WHERE id
+     * = ? AND status = 'RECEIVED'} — so the association is set exactly once and duplicate/
+     * concurrent deliveries cannot re-associate or re-process. Must run inside the detection
+     * transaction so the association commits atomically with the incident create/correlate and
+     * its audit (INV-INC-007, INV-EVENT-006).
+     *
+     * @param id         the event id
+     * @param incidentId the incident to associate
+     * @return {@link ProcessingOutcome#MARKED} if this call performed the association+transition;
+     *         {@link ProcessingOutcome#ALREADY_PROCESSED} if the row was no longer RECEIVED;
+     *         {@link ProcessingOutcome#NOT_FOUND} if no such event exists
+     */
+    ProcessingOutcome associateIncidentAndMarkProcessed(UUID id, UUID incidentId);
 }

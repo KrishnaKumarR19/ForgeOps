@@ -1,5 +1,7 @@
 package com.forgeops.incidents.domain;
 
+import java.time.Duration;
+import java.time.Instant;
 import java.util.Optional;
 import java.util.UUID;
 
@@ -14,11 +16,29 @@ import java.util.UUID;
  */
 public interface IncidentRepository {
 
-    /** Persists a newly created incident and returns it (used for manual creation). */
+    /** Persists a newly created incident and returns it (used for manual and detected creation). */
     Incident save(Incident incident);
 
     /** Finds an incident by its identity. */
     Optional<Incident> findById(UUID id);
+
+    /**
+     * Finds the active incident that an event correlates to (Phase 7 Slice 4, ratified v1
+     * contract). A match requires the same {@code serviceId}, {@code environmentId}, and
+     * normalized {@code failureSignature}; an ACTIVE state (OPEN/ACKNOWLEDGED/INVESTIGATING/
+     * MITIGATED); and a sliding 30-minute window on the event's {@code receivedAt}:
+     * {@code created_at <= receivedAt <= created_at + window} (no future-created incidents).
+     * When several match, the newest wins ({@code ORDER BY created_at DESC, id DESC LIMIT 1}).
+     *
+     * @param serviceId     event service
+     * @param environmentId event environment
+     * @param signature     normalized failure signature
+     * @param receivedAt    event server-side acceptance time (correlation timestamp)
+     * @param window        the configured correlation window (e.g. 30 minutes)
+     * @return the matching active incident, or empty if none
+     */
+    Optional<Incident> findActiveMatch(UUID serviceId, UUID environmentId, String signature,
+                                       Instant receivedAt, java.time.Duration window);
 
     /**
      * Applies a lifecycle/severity mutation with an optimistic-lock guard (Phase 7 Slice 2,

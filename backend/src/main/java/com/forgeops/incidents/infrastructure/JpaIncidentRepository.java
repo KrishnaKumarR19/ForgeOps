@@ -52,6 +52,15 @@ class JpaIncidentRepository implements IncidentRepository {
                 next.currentAssigneeId().orElse(null));
     }
 
+    @Override
+    public java.util.Optional<Incident> findActiveMatch(UUID serviceId, UUID environmentId,
+                                                        String signature, java.time.Instant receivedAt,
+                                                        java.time.Duration window) {
+        java.time.Instant windowStart = receivedAt.minus(window);
+        IncidentEntity match = jpa.findActiveMatch(serviceId, environmentId, signature, receivedAt, windowStart);
+        return java.util.Optional.ofNullable(match).map(JpaIncidentRepository::toDomain);
+    }
+
     private static IncidentEntity toEntity(Incident i) {
         return new IncidentEntity(
                 i.id(),
