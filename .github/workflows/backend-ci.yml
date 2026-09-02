@@ -41,6 +41,23 @@ jobs:
         # tests all run. Any failure fails the workflow. No H2 fallback, no skipped tests.
         run: ./mvnw -B clean verify
 
+      # TEMPORARY diagnostic (Phase 7 Slice 2): surface failing test details as annotations
+      # because surefire artifacts are auth-gated for this repo. Removed after diagnosis.
+      - name: Surface test failures as annotations
+        if: failure()
+        working-directory: backend
+        run: |
+          echo "::group::Failed test details"
+          for f in target/surefire-reports/*.txt target/failsafe-reports/*.txt; do
+            [ -f "$f" ] || continue
+            if grep -Eq "FAILURE|ERROR|<<<" "$f"; then
+              echo "::error file=$f::$(head -c 1500 "$f" | tr '\n' ' ')"
+              echo "----- $f -----"
+              sed -n '1,60p' "$f"
+            fi
+          done
+          echo "::endgroup::"
+
       - name: Upload Surefire reports on failure
         if: failure()
         uses: actions/upload-artifact@v4
