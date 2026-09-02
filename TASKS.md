@@ -1,6 +1,6 @@
 # ForgeOps — Delivery Phases & Milestones
 
-Status: Implementation in progress — Phase 5 (Event Ingestion, FR-EV-1..4) complete/CI-verified; Phase 6 (Async Event Processing) complete/CI-verified (Slices 1–4: transactional outbox, publisher→RabbitMQ, idempotent consumer, retention cleanup); Phase 7 (Incident Domain) in progress — Slices 1–2 CI-verified (incident persistence foundation; manual lifecycle management + optimistic concurrency + audit); Slice 3 (assignment/comments) not started; Slice 4 (detection) gated on open correlation decisions
+Status: Implementation in progress — Phase 5 (Event Ingestion, FR-EV-1..4) complete/CI-verified; Phase 6 (Async Event Processing) complete/CI-verified (Slices 1–4: transactional outbox, publisher→RabbitMQ, idempotent consumer, retention cleanup); Phase 7 (Incident Domain) in progress — Slices 1–3 CI-verified (incident persistence foundation; manual lifecycle management + optimistic concurrency + audit; assignment history + comments); Slice 4 (event-driven detection/correlation) gated on open correlation decisions
 Related: [PRD.md](./PRD.md) · [ARCHITECTURE.md](./ARCHITECTURE.md) · [DECISIONS.md](./DECISIONS.md) · [ENGINEERING_CONSTITUTION.md](./ENGINEERING_CONSTITUTION.md)
 
 > This is a **high-level roadmap of phases and milestones only** — not a detailed task
@@ -138,6 +138,42 @@ role-based access.
   Security Crypto `Argon2PasswordEncoder` + Bouncy Castle) behind the existing
   `PasswordHash` boundary, with the SECURITY_DESIGN §5 baseline parameters (ADR-0031).
   6 focused unit tests; verified locally.
+- **Phase 7 — Slice 3: incident assignment history + comments (Done):** assignment
+  (assign/reassign/unassign) and investigation comments over the incident aggregate (FR-IN-4/5;
+  DOMAIN_MODEL §11/§12; API_CONTRACTS §12/§13; ADR-0021; INV-INC-003/005/008). Domain:
+  `Incident.assignTo`/`unassign` (version-bumping mutation of `current_assignee_id`, rejected once
+  CLOSED); `IncidentAssignment` + `IncidentAssignmentRepository` (append + close-active + list);
+  `IncidentComment` + `CommentCategory` (NOTE/INVESTIGATION/RESOLUTION) + `IncidentCommentRepository`
+  (append + list); `UserExistenceReader`; `IncidentRepository.updateAssigneeWithVersionCheck`
+  (assignment compare-and-set). New Flyway `V6__incident_assignments_comments.sql`:
+  `incident_assignments` (FKs to incidents/users, `assigned_by`, `unassigned_at`, optional `team`;
+  current pointer stays on `incidents.current_assignee_id`, ADR-0021) and `incident_comments`
+  (category CHECK), each with an `(incident_id, time)` index for its list endpoint; V1–V5 unchanged.
+  Application `IncidentService`: `assign`/`unassign` run one atomic transaction — optimistic
+  version bump (INV-INC-005) + close the prior active assignment + append a new history record +
+  audit (INV-INC-003/007) — with the **ENGINEER self-assign-only** rule enforced server-side
+  (content-dependent, INV-SEC-005 → 403) and an unknown assignee → 422; `addComment` appends a
+  comment + audit without mutating the incident (no version bump, no If-Match — API_CONTRACTS §11),
+  `listComments` reads. API `IncidentController`: `POST`/`DELETE /api/v1/incidents/{id}/assignment`
+  (If-Match required — 428/412) and `POST`/`GET /api/v1/incidents/{id}/comments`; RFC 9457 problem
+  responses; `ForbiddenAssignmentException` → 403. RBAC in `SecurityConfig`: assignment POST =
+  ADMIN/ENGINEER/INCIDENT_MANAGER (self rule in service), assignment DELETE = ADMIN/INCIDENT_MANAGER
+  only, comment POST = ADMIN/ENGINEER/INCIDENT_MANAGER, comment GET = any authenticated reader.
+  Audit action names (docs give examples only): `INCIDENT_ASSIGNED`/`INCIDENT_UNASSIGNED`/
+  `INCIDENT_COMMENTED`. **Scope:** assignment + comments only — no detection/correlation (Slice 4,
+  gated), no Phase 6 changes; comments are append-only and unversioned. Non-container suite
+  **195/195** locally incl. architecture + module-boundary tests (5 domain assignment + 10
+  application). Testcontainers PostgreSQL `IncidentAssignmentCommentPersistenceIntegrationTests`
+  (assign+history+audit, reassign append-only + close-prior, unassign, unknown assignee, ENGINEER
+  self-restriction, stale-version rejection, deterministic concurrent one-winner, comments
+  append-only + audit + no version bump, DB category CHECK — with **real provisioned users** for
+  FK integrity) and real-HTTP `IncidentAssignmentCommentApiIntegrationTests` (manager assign;
+  ENGINEER self vs other → 403; VIEWER → 403; If-Match 428/412; ENGINEER-cannot-unassign → 403;
+  manager unassign; comment ENG create / VIEWER 403 / read-all; comment does not change the ETag)
+  are **blocked locally by the Docker Engine 29 limitation**; executed on CI. **Status: GREEN —
+  verified by GitHub Actions CI (run 33659865245, commit 9c85a43): `./mvnw -B clean verify`
+  succeeded on ubuntu-latest with native Docker, full unit + architecture + module-boundary +
+  Testcontainers PostgreSQL & RabbitMQ suite with no exclusions.**
 - **Phase 7 — Slice 2: manual incident management + lifecycle + optimistic concurrency + audit (Done):**
   manual incident management over the Slice 1 aggregate (FR-IN-1..4/6/7; DOMAIN_MODEL §10/§14;
   API_CONTRACTS §5/§9/§10/§11/§26; INV-INC-002..008; ADR-0018/0027/0028). Domain: lifecycle
@@ -607,7 +643,12 @@ audit, and event-driven detection/correlation. Sliced per the approved reconnais
   (412/428, INV-INC-005/ADR-0028), RBAC (close = ADMIN/INCIDENT_MANAGER only), and an atomic
   append-only `audit_entries` trail (INV-INC-007/ADR-0018) — see the detailed entry above. CI:
   run 33655558580, commit d44d784.
-- **Slice 3 (assignment history + comments)** — `Not started`.
+- **Slice 3 (assignment history + comments)** — CI verified: assign/reassign/unassign with an
+  append-only `incident_assignments` history (current pointer + history, ADR-0021), append-only
+  `incident_comments`, RBAC (assign = IM/ADMIN + ENGINEER self-assign only; unassign = IM/ADMIN;
+  comment = ENG/IM/ADMIN, read = any authenticated), integrated with optimistic concurrency
+  (assignment bumps version, requires If-Match) and the audit trail — see the detailed entry
+  above. CI: run 33659865245, commit 9c85a43.
 - **Slice 4 (event-driven detection/correlation)** — `Not started` / **gated**: open correlation
   decisions (time-window length, failure-signature normalization, detection title/severity
   generation, one-active-incident safeguard) must be resolved first.
