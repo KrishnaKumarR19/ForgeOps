@@ -75,6 +75,14 @@ forgeops:
   incidents:
     detection:
       correlation-window: ${FORGEOPS_INCIDENT_CORRELATION_WINDOW:PT30M}
+  # Ingestion rate limiting (Phase 8 Slice 1, FR-RL-6, API_CONTRACTS §22). Protective, in-process,
+  # per authenticated principal on POST /api/v1/events. Config fixes behavior, not scalability
+  # (NFR-8). ForgeOps v1: 60 requests per 1 minute per principal. ISO-8601 duration for window.
+  rate-limit:
+    ingestion:
+      enabled: ${FORGEOPS_RATE_LIMIT_INGESTION_ENABLED:true}
+      limit: ${FORGEOPS_RATE_LIMIT_INGESTION_LIMIT:60}
+      window: ${FORGEOPS_RATE_LIMIT_INGESTION_WINDOW:PT1M}
   events:
     rabbitmq:
       exchange: ${FORGEOPS_EVENTS_EXCHANGE:forgeops.events}
