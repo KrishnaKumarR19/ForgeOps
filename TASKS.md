@@ -172,8 +172,17 @@ role-based access.
   broker data exposed. Secrets are env-only (no committed RabbitMQ credentials, no default
   password). **NOT in this slice:** consumers, consumer idempotency, explicit consumer ack,
   DLQ/dead-letter, incidents, Redis, SSE, frontend, AI, rate limiting, retention cleanup. No
-  schema change (V3 already had the publisher fields). **Status: YELLOW — implementation
-  complete, authoritative CI/integration verification pending.**
+  schema change (V3 already had the publisher fields). **Two CI-only test issues were found
+  and fixed (test/config only, no production change):** (1) an integration test invoked the
+  `@Modifying markPublished` repository method outside a transaction — now wrapped in a
+  `TransactionTemplate` (production always runs it inside the publisher transaction); (2)
+  adding `spring-boot-starter-amqp` registered a RabbitMQ health contributor that made the
+  broker-less `HealthEndpointTests` report `503` — the rabbit health indicator is now disabled
+  in the **test** profile only (production `/actuator/health` still includes RabbitMQ).
+  **Status: GREEN — verified by GitHub Actions CI (run 33632630659, commit faec442):
+  `./mvnw -B clean verify` succeeded on ubuntu-latest with native Docker, running the full
+  unit + architecture + module-boundary + Testcontainers PostgreSQL & RabbitMQ suite with no
+  exclusions.**
 - **Phase 6 — Slice 1: transactional outbox persistence (In progress):** the durable outbox
   foundation — **persistence + atomic event+outbox commit only, no publishing**
   (ADR-0013 steps 1–3, ADR-0019, PERSISTENCE_MODEL §13/§16/§18, DOMAIN_MODEL §9,
@@ -419,7 +428,7 @@ transaction), the outbox publisher that hands off to RabbitMQ, and idempotent co
 that process under at-least-once delivery with explicit acknowledgement.
 - **Slice 1 (transactional outbox persistence)** — CI verified: event + outbox committed
   atomically in one transaction (INV-OUTBOX-001; see the detailed entry above).
-- **Slice 2 (outbox publisher + RabbitMQ handoff)** — done pending CI: polling publisher with
+- **Slice 2 (outbox publisher + RabbitMQ handoff)** — CI verified: polling publisher with
   `FOR UPDATE SKIP LOCKED` claiming, RabbitMQ publish with publisher confirms, PENDING→PUBLISHED
   on success, retryable failure with capped-exponential backoff (see the detailed entry above).
   Remaining Phase 6: idempotent consumers, explicit ack, DLQ/retry policy (FR-RL-3/4/5,
