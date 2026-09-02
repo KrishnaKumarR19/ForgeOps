@@ -31,6 +31,18 @@ class JpaIncidentRepository implements IncidentRepository {
         return jpa.findById(id).map(JpaIncidentRepository::toDomain);
     }
 
+    @Override
+    public int updateWithVersionCheck(Incident next, long expectedVersion) {
+        return jpa.updateWithVersionCheck(
+                next.id(),
+                expectedVersion,
+                next.version(),
+                next.state().name(),
+                next.severity().name(),
+                next.resolvedAt().orElse(null),
+                next.closedAt().orElse(null));
+    }
+
     private static IncidentEntity toEntity(Incident i) {
         return new IncidentEntity(
                 i.id(),

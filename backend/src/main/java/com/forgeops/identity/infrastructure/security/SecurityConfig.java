@@ -65,6 +65,22 @@ public class SecurityConfig {
                         // denied (403) per API_CONTRACTS.md §5 authorization matrix.
                         .requestMatchers(HttpMethod.POST, "/api/v1/events")
                             .hasAnyRole("ADMIN", "ENGINEER", "INCIDENT_MANAGER")
+                        // Incidents (Phase 7 Slice 2, API_CONTRACTS.md §5/§10). Order matters:
+                        // the most specific command rule (close = IM/ADMIN only) precedes the
+                        // broader command/create rules. GET is readable by all four roles.
+                        .requestMatchers(HttpMethod.POST, "/api/v1/incidents/*/close")
+                            .hasAnyRole("ADMIN", "INCIDENT_MANAGER")
+                        .requestMatchers(HttpMethod.POST,
+                                "/api/v1/incidents/*/acknowledge",
+                                "/api/v1/incidents/*/investigate",
+                                "/api/v1/incidents/*/mitigate",
+                                "/api/v1/incidents/*/resolve",
+                                "/api/v1/incidents/*/severity")
+                            .hasAnyRole("ADMIN", "ENGINEER", "INCIDENT_MANAGER")
+                        .requestMatchers(HttpMethod.POST, "/api/v1/incidents")
+                            .hasAnyRole("ADMIN", "ENGINEER", "INCIDENT_MANAGER")
+                        .requestMatchers(HttpMethod.GET, "/api/v1/incidents/**")
+                            .hasAnyRole("ADMIN", "ENGINEER", "INCIDENT_MANAGER", "VIEWER")
                         .anyRequest().authenticated())
                 .exceptionHandling(ex -> ex
                         .authenticationEntryPoint(entryPoint)

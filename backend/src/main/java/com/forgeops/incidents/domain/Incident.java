@@ -149,6 +149,76 @@ public final class Incident {
         return Optional.ofNullable(closedAt);
     }
 
+    // --- Lifecycle commands (Phase 7 Slice 2) ----------------------------------------------
+    // The aggregate owns the transition rules (DOMAIN_MODEL §10, INV-INC-002). Each command
+    // validates the current state and returns a NEW Incident with the next state, the
+    // documented timestamp side effects, and version + 1 (the intended next version — the
+    // persistence layer enforces it with a conditional compare-and-set on the current version).
+    // An illegal transition throws IllegalIncidentTransitionException (→ 409). Time is supplied
+    // by the caller from the injected Clock (no Instant.now() in the domain).
+
+    /** {@code OPEN → ACKNOWLEDGED}. */
+    public Incident acknowledge(Instant now) {
+        requireState(IncidentState.OPEN, "acknowledge");
+        return withState(IncidentState.ACKNOWLEDGED, resolvedAt, closedAt);
+    }
+
+    /**
+     * {@code OPEN|ACKNOWLEDGED → INVESTIGATING} (start), {@code MITIGATED → INVESTIGATING}
+     * (regression), or {@code RESOLVED → INVESTIGATING} (reopen). The reopen/regression paths
+     * preserve the existing {@code resolved_at}/{@code closed_at} — the docs do not specify
+     * clearing them, so their values are left intact (a deliberate, reported decision).
+     */
+    public Incident investigate(Instant now) {
+        if (state != IncidentState.OPEN && state != IncidentState.ACKNOWLEDGED
+                && state != IncidentState.MITIGATED && state != IncidentState.RESOLVED) {
+            throw new IllegalIncidentTransitionException(state, "investigate");
+        }
+        return withState(IncidentState.INVESTIGATING, resolvedAt, closedAt);
+    }
+
+    /** {@code INVESTIGATING → MITIGATED}. */
+    public Incident mitigate(Instant now) {
+        requireState(IncidentState.INVESTIGATING, "mitigate");
+        return withState(IncidentState.MITIGATED, resolvedAt, closedAt);
+    }
+
+    /** {@code MITIGATED → RESOLVED}; sets {@code resolved_at}. */
+    public Incident resolve(Instant now) {
+        requireState(IncidentState.MITIGATED, "resolve");
+        return withState(IncidentState.RESOLVED, now, closedAt);
+    }
+
+    /** {@code RESOLVED → CLOSED}; sets {@code closed_at}. Terminal state. */
+    public Incident close(Instant now) {
+        requireState(IncidentState.RESOLVED, "close");
+        return withState(IncidentState.CLOSED, resolvedAt, now);
+    }
+
+    /**
+     * Severity change (a separate command, not a lifecycle transition). Allowed in any
+     * non-terminal state (not {@code CLOSED}). Severity is always present (INV-INC-004).
+     */
+    public Incident changeSeverity(IncidentSeverity newSeverity, Instant now) {
+        requireNonNull(newSeverity, "severity");
+        if (state == IncidentState.CLOSED) {
+            throw new IllegalIncidentTransitionException(state, "change severity of");
+        }
+        return new Incident(id, title, serviceId, environmentId, failureSignature, newSeverity,
+                state, currentAssigneeId, version + 1, createdAt, resolvedAt, closedAt);
+    }
+
+    private void requireState(IncidentState required, String command) {
+        if (state != required) {
+            throw new IllegalIncidentTransitionException(state, command);
+        }
+    }
+
+    private Incident withState(IncidentState next, Instant newResolvedAt, Instant newClosedAt) {
+        return new Incident(id, title, serviceId, environmentId, failureSignature, severity,
+                next, currentAssigneeId, version + 1, createdAt, newResolvedAt, newClosedAt);
+    }
+
     private static <T> T requireNonNull(T value, String field) {
         if (value == null) {
             throw new IllegalArgumentException(field + " is required");
