@@ -49,6 +49,13 @@ class IncidentLifecyclePersistenceIntegrationTests {
         jdbcTemplate.execute("TRUNCATE TABLE audit_entries CASCADE");
         jdbcTemplate.execute("TRUNCATE TABLE operational_events CASCADE");
         jdbcTemplate.execute("TRUNCATE TABLE incidents CASCADE");
+        jdbcTemplate.execute("TRUNCATE TABLE users CASCADE");
+        // The audit actor_id is a real FK to users(id); persist the acting user so audit
+        // inserts (which reference this actor) satisfy fk_audit_entries_actor.
+        jdbcTemplate.update("""
+                INSERT INTO users (id, username, password_hash, status, created_at)
+                VALUES (?::uuid, 'incident-actor', NULL, 'ACTIVE', now())
+                """, ACTOR.toString());
     }
 
     private CreateIncidentCommand createCommand() {
