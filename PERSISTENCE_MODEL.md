@@ -404,6 +404,7 @@ Each index is tied to an expected access pattern; nothing speculative.
 | (`service_id`, `environment_id`, `created_at`) | Incidents by context over time. |
 | (`severity`, `state`) | Prioritized active views. |
 | (`current_assignee_id`) partial where assigned | "My incidents" views (only if that view exists). |
+| **unique (`service_id`, `environment_id`, `failure_signature`) partial where `state IN ('OPEN','ACKNOWLEDGED','INVESTIGATING','MITIGATED')`** | **Event-driven detection concurrency safeguard (`uq_incidents_active_correlation`, V7): at most one active incident per correlation key; a losing concurrent create hits this and retries to correlate to the winner (ADR-0036).** |
 
 ### `outbox_messages`
 | Index | Supports |
@@ -433,7 +434,12 @@ query is actually built.
   assignment→incident/users; comment→incident/author; audit→resource is a soft reference
   (see below).
 - **Unique:** (`client_id`, `idempotency_key`) on events; unique login on users; unique
-  `key` on services/environments; (`user_id`, `role`) on user_roles.
+  `key` on services/environments; (`user_id`, `role`) on user_roles; **partial unique
+  (`service_id`, `environment_id`, `failure_signature`) over active incident states on
+  `incidents` (`uq_incidents_active_correlation`, V7) — the authoritative "at most one active
+  incident per correlation key" safeguard for event-driven detection (§16, ADR-0036); rows
+  with a NULL `failure_signature` (e.g. manual incidents) do not collide, and RESOLVED/CLOSED
+  incidents free the key.**
 - **NOT NULL:** identities, `password_hash`, event `service_id`/`environment_id`/
   `received_at`, incident `severity`/`state`, audit `action`/`resource_type`/`resource_id`/
   `occurred_at`.

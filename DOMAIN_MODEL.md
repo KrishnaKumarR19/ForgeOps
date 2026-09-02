@@ -225,10 +225,30 @@ uses **no ML/AI** (ADR-0017). Given Option A (§4), correlation maps an incoming
 (service, environment, normalized failure signature) matches and it falls within the
 correlation time window; otherwise detection creates a new incident.
 
-**Open parameters (implementation/configuration decisions, not fixed here):** the exact
-time-window length, the precise failure-signature normalization, and whether the window
-is sliding or fixed. These are marked open (§ remaining questions) and must not be
-invented arbitrarily.
+**Ratified v1 parameters (Phase 7 Slice 4; previously open, now fixed and implemented —
+ADR-0036):**
+
+- **Time window:** a **sliding** 30-minute window on the event's server-side `received_at`.
+  An event correlates to an active incident when `incident.created_at <= event.received_at`
+  and `incident.created_at >= event.received_at − 30m` (no future-created incidents match).
+  Configurable via `forgeops.incidents.detection.correlation-window` (default `PT30M`).
+- **Failure-signature normalization:** deterministic and rule-based (no ML). Source =
+  `failure_signature` when non-blank, otherwise `event_type`. Steps, in order: trim;
+  lowercase (`Locale.ROOT`); collapse whitespace runs to a single space; strip one trailing
+  period; trim; bound to 200 characters. A blank source is invalid detection data (the event
+  is a poison message → dead-letter).
+- **Active states:** OPEN, ACKNOWLEDGED, INVESTIGATING, MITIGATED. RESOLVED and CLOSED do
+  **not** correlate — a matching event creates a new incident.
+- **Tie-break:** newest active match wins (`ORDER BY created_at DESC, id DESC LIMIT 1`).
+- **Detected-incident shape:** state OPEN, `version` 0, unassigned; severity taken from the
+  event, defaulting to **MINOR** when absent; deterministic title `"<service>/<environment>:
+  <event_type>"`.
+- **One-active-incident safeguard:** a PostgreSQL partial unique index on
+  `(service_id, environment_id, failure_signature)` over the active states guarantees at most
+  one active incident per correlation key; a concurrent create that loses the race is retried
+  and correlates to the winner (no Redis/JVM locks). See PERSISTENCE_MODEL §16 and ADR-0036.
+- **Audit:** detection is a SYSTEM action — audit `actor_type = SYSTEM`, `actor_id` NULL (no
+  fake persisted user); `INCIDENT_CREATED` on create, `INCIDENT_EVENT_CORRELATED` on attach.
 
 ---
 

@@ -1,6 +1,6 @@
 # ForgeOps — Delivery Phases & Milestones
 
-Status: Implementation in progress — Phase 5 (Event Ingestion, FR-EV-1..4) complete/CI-verified; Phase 6 (Async Event Processing) complete/CI-verified (Slices 1–4: transactional outbox, publisher→RabbitMQ, idempotent consumer, retention cleanup); Phase 7 (Incident Domain) in progress — Slices 1–3 CI-verified (incident persistence foundation; manual lifecycle management + optimistic concurrency + audit; assignment history + comments); Slice 4 (event-driven detection/correlation) gated on open correlation decisions
+Status: Implementation in progress — Phase 5 (Event Ingestion, FR-EV-1..4) complete/CI-verified; Phase 6 (Async Event Processing) complete/CI-verified (Slices 1–4: transactional outbox, publisher→RabbitMQ, idempotent consumer, retention cleanup); Phase 7 (Incident Domain) COMPLETE/CI-verified — Slices 1–4 CI-verified (incident persistence foundation; manual lifecycle management + optimistic concurrency + audit; assignment history + comments; event-driven detection/correlation). Next gate: Phase 8 (Reliability & Concurrency)
 Related: [PRD.md](./PRD.md) · [ARCHITECTURE.md](./ARCHITECTURE.md) · [DECISIONS.md](./DECISIONS.md) · [ENGINEERING_CONSTITUTION.md](./ENGINEERING_CONSTITUTION.md)
 
 > This is a **high-level roadmap of phases and milestones only** — not a detailed task
@@ -138,6 +138,73 @@ role-based access.
   Security Crypto `Argon2PasswordEncoder` + Bouncy Castle) behind the existing
   `PasswordHash` boundary, with the SECURITY_DESIGN §5 baseline parameters (ADR-0031).
   6 focused unit tests; verified locally.
+- **Phase 7 — Slice 4: event-driven incident detection + correlation (Done):** the closing
+  Phase 7 item — the operational-event consumer now runs deterministic, rule-based
+  detection/correlation inside its processing transaction (FR-EV-5, FR-IN-8; DOMAIN_MODEL §6;
+  PERSISTENCE_MODEL §16/§18; ADR-0017/0020; INV-INC-007, INV-EVENT-006). **Ownership (recon
+  Option A):** `events.application` `EventProcessingService` coordinates one PostgreSQL
+  transaction and calls the incidents application port; the incidents side never reads events
+  infrastructure — a framework-free `DetectionContext` DTO carries the needed fields
+  (service/environment ids + keys, event type, severity, failure signature, received_at). The
+  `events → incidents.application` dependency is authoritative→authoritative and allowed by the
+  module-boundary rules (no cycle; incidents does not depend on events). **Flow (atomic):** load
+  the event; if it is not `RECEIVED` (duplicate delivery) it is an idempotent no-op — no
+  detection, incident, association, or audit; otherwise build the `DetectionContext`, call
+  `IncidentDetectionPort.correlateOrCreate`, then a single conditional `UPDATE operational_events
+  SET status='PROCESSED', incident_id=? WHERE id=? AND status='RECEIVED'` (association set exactly
+  once); an unknown event or invalid detection data is a poison message
+  (`NonRetryableEventProcessingException` → DLQ, not retried). New `incidents.domain`:
+  `FailureSignatureNormalizer` (deterministic — source = failure signature else event type; trim,
+  lowercase ROOT, collapse whitespace, strip one trailing period, trim, bound to 200 chars; blank
+  source → invalid detection data), framework-free `DetectionContext`, and `Incident.detected(...)`
+  (OPEN, version 0, unassigned, SYSTEM). `IncidentRepository.findActiveMatch(serviceId,
+  environmentId, signature, receivedAt, window)` — the ratified correlation query. New
+  `incidents.application`: `IncidentDetectionPort`/`IncidentDetectionService`
+  (`correlateOrCreate(DetectionContext) → DetectionResult(incidentId, created)`), `DetectionResult`,
+  `DetectionProperties` (`forgeops.incidents.detection.correlation-window`, **PT30M**), and
+  `InvalidDetectionDataException`; the service normalizes the signature, finds the newest active
+  match or creates a new incident (severity default **MINOR**, title `"<service>/<environment>:
+  <event_type>"`), and writes a **SYSTEM** audit entry (`actor_type=SYSTEM`, **`actor_id` NULL** —
+  no fake user): `INCIDENT_CREATED` on create, `INCIDENT_EVENT_CORRELATED` on attach. It runs in
+  the caller's transaction (no own tx). New Flyway `V7__incident_active_correlation.sql`: partial
+  unique index `uq_incidents_active_correlation ON incidents (service_id, environment_id,
+  failure_signature) WHERE state IN ('OPEN','ACKNOWLEDGED','INVESTIGATING','MITIGATED')` — the
+  PostgreSQL-authoritative concurrency safeguard (at most one active incident per correlation key);
+  V1–V6 unchanged. **Ratified v1 contract:** 30-minute sliding window on `received_at`
+  (`created_at <= received_at` and `created_at >= received_at − window`; no future-created
+  incidents); active states OPEN/ACKNOWLEDGED/INVESTIGATING/MITIGATED (RESOLVED/CLOSED do not
+  correlate → new incident); newest-wins (`ORDER BY created_at DESC, id DESC LIMIT 1`); SYSTEM audit
+  with `actor_id` NULL. **Concurrency:** two distinct events racing to create the same-key incident
+  are serialized by the unique index — the loser's INSERT fails with a data-integrity violation and
+  is retried by the consumer's bounded retry (each `process()` opens a fresh `TransactionTemplate`,
+  so the retry is a clean transaction), after which it correlates to the winner. **Scope:**
+  detection/correlation only — no Phase 6 semantic changes; no Redis/JVM locks/sleeps; the ratified
+  contract and the V7 invariant are unchanged. Non-container suite **206/206** locally incl.
+  architecture + module-boundary tests (7 `FailureSignatureNormalizerTests` + 4
+  `IncidentDetectionServiceTests`). Testcontainers PostgreSQL
+  `IncidentDetectionCorrelationIntegrationTests` (create/correlate/window-boundary/outside-window/
+  future/diff-service/env/signature/RESOLVED/CLOSED-no-correlate/partial-unique-prevents-two/
+  concurrent-distinct-events-one-incident-both-associate (latch + retry)/duplicate-delivery-
+  idempotent/incident_id-once/PROCESSED/unknown-non-retryable/SYSTEM-audit-actor-null/
+  correlation-audit-action) and RabbitMQ end-to-end `EventDetectionEndToEndIntegrationTests`
+  (REST → outbox → publish → broker → consumer → detection → incident + `incident_id` + PROCESSED,
+  then a second event correlates to the same incident) are **blocked locally by the Docker Engine
+  29 limitation**; executed on CI. **The initial Slice 4 push (commit d07053e) failed CI on four
+  detection ITs; all four were test-fixture defects (no production/migration/constraint change):**
+  the consumer happy-path IT did not truncate `incidents`/`audit_entries` (a residual active
+  incident with a real-clock `created_at` beyond the fixtures' hardcoded past `received_at` caused a
+  `findActiveMatch` miss and a repeated `uq_incidents_active_correlation` violation → DLQ) — fixed
+  by truncating those tables; the outside-window/future ITs inserted a second **active** same-key
+  incident (which the partial unique index correctly rejects) — fixed by making the stale incident
+  RESOLVED (outside-window) and asserting the temporal predicate directly via `findActiveMatch`
+  (future), never holding two active same-key rows; and the concurrency IT used a hardcoded past
+  `received_at` while the winner's incident `created_at` came from the real `Clock`
+  (`created_at > received_at` → never matched) — fixed by anchoring the IT clock to `Instant.now()`
+  and the concurrent events' `received_at` one minute ahead (still inside the window). **Status:
+  GREEN — verified by GitHub Actions CI (run 33666804117, commit ab2ac0a): `./mvnw -B clean verify`
+  succeeded on ubuntu-latest with native Docker, full unit + architecture + module-boundary +
+  Testcontainers PostgreSQL & RabbitMQ suite with no exclusions (349 tests).** This completes
+  Phase 7.
 - **Phase 7 — Slice 3: incident assignment history + comments (Done):** assignment
   (assign/reassign/unassign) and investigation comments over the incident aggregate (FR-IN-4/5;
   DOMAIN_MODEL §11/§12; API_CONTRACTS §12/§13; ADR-0021; INV-INC-003/005/008). Domain:
@@ -626,10 +693,10 @@ that process under at-least-once delivery with explicit acknowledgement.
   and [ADR-0014](./DECISIONS.md#adr-0014--at-least-once-delivery-with-idempotent-consumers)).
   **Phase 6 complete — CI verified (run 33644108557, commit fb4660c).**
 
-### Phase 7 — Incident Domain — `In progress`
+### Phase 7 — Incident Domain — `Done`
 Implement incident lifecycle state machine, severity, assignment, notes, resolution,
 audit, and event-driven detection/correlation. Sliced per the approved reconnaissance
-(manual domain first; detection is gated on open correlation decisions).
+(manual domain first, then detection under the ratified v1 correlation contract).
 - **Slice 1 (incident persistence + aggregate foundation)** — CI verified: framework-free
   `Incident` aggregate + `IncidentState`/`IncidentSeverity` enums + `IncidentRepository` port;
   `V4__incidents.sql` (incidents table with service/environment/assignee FKs, severity/state
@@ -649,11 +716,19 @@ audit, and event-driven detection/correlation. Sliced per the approved reconnais
   comment = ENG/IM/ADMIN, read = any authenticated), integrated with optimistic concurrency
   (assignment bumps version, requires If-Match) and the audit trail — see the detailed entry
   above. CI: run 33659865245, commit 9c85a43.
-- **Slice 4 (event-driven detection/correlation)** — `Not started` / **gated**: open correlation
-  decisions (time-window length, failure-signature normalization, detection title/severity
-  generation, one-active-incident safeguard) must be resolved first.
+- **Slice 4 (event-driven detection/correlation)** — CI verified: the operational-event consumer
+  runs deterministic detection/correlation inside its processing transaction — correlate to the
+  newest active incident or create a new one, set `operational_events.incident_id`, mark the event
+  PROCESSED, and write a SYSTEM audit entry (`actor_id` NULL), all atomic (FR-EV-5/FR-IN-8,
+  INV-INC-007/INV-EVENT-006, ADR-0017/0020). Ratified v1 contract: 30-minute sliding window on
+  `received_at`, deterministic failure-signature normalization (fallback to event type, bound 200),
+  active states OPEN/ACKNOWLEDGED/INVESTIGATING/MITIGATED (RESOLVED/CLOSED create a new incident),
+  newest-wins, severity default MINOR, deterministic title. Concurrency safeguard = the
+  `V7__incident_active_correlation.sql` partial unique index (at most one active incident per
+  service/environment/signature) + retry-on-conflict (the loser correlates to the winner) — no
+  Redis/JVM locks. See the detailed entry above. CI: run 33666804117, commit ab2ac0a.
 - **Milestone:** Incidents are created (including via detection), managed, and audited
-  (FR-IN-*).
+  (FR-IN-*). **Met — Phase 7 complete (CI verified, run 33666804117, commit ab2ac0a).**
 
 ### Phase 8 — Reliability & Concurrency — `Not started`
 Harden transactions, concurrency protection, idempotent processing, retry policy,

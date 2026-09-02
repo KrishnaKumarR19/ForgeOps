@@ -1119,3 +1119,59 @@ are package-private, internal to the module's infrastructure.
   it (`..domain..` must not depend on `jakarta.persistence`/Spring Data).
 - (+) Persistence concerns (fetch strategy, columns) evolve without touching the domain.
 - (−) A small mapping layer in the adapter — an accepted, contained cost.
+
+## ADR-0036 — Event-driven incident detection: ratified v1 correlation contract and concurrency safeguard
+
+**Status:** Accepted
+
+**Context.** ADR-0017 fixed detection as deterministic, rule-based, and ML-free, and ADR-0020
+placed event→incident correlation in the incident domain. DOMAIN_MODEL §6 left three parameters
+open: the time-window length, the failure-signature normalization, and whether the window is
+sliding or fixed. Phase 7 Slice 4 implements event-driven detection and must fix these without
+inventing them arbitrarily, while honoring the single-transaction and PostgreSQL-authoritative
+invariants (PERSISTENCE_MODEL §18, INV-INC-007, INV-EVENT-006).
+
+**Problem.** Ratify the correlation parameters; decide where detection executes and its
+transaction boundary; and choose a concurrency safeguard that guarantees at most one active
+incident per correlation key without a distributed lock.
+
+**Alternatives.**
+- *Ownership:* (A) the events consumer calls an incidents application port synchronously within
+  its processing transaction; (B) detection runs asynchronously via a second internal event /
+  outbox. B adds a second messaging hop and breaks the single-transaction guarantee.
+- *Concurrency:* application/JVM lock, Redis lock, `SELECT … FOR UPDATE` on a synthetic key, or a
+  PostgreSQL partial unique index + retry-on-conflict. Locks add moving parts and a non-Postgres
+  authority; Redis is explicitly non-authoritative (ADR-0004).
+
+**Decision.**
+- **Ownership = Option A.** `events.application.EventProcessingService` coordinates one
+  `TransactionTemplate` and calls the incidents application port `IncidentDetectionPort`; a
+  framework-free `DetectionContext` DTO carries the needed fields so the incidents side never
+  reads events infrastructure. The atomic unit is: correlate-or-create incident + SYSTEM audit +
+  set `operational_events.incident_id` + `RECEIVED → PROCESSED`.
+- **Ratified v1 parameters:** sliding **30-minute** window on `received_at`
+  (`created_at <= received_at` and `created_at >= received_at − window`; no future incidents;
+  `forgeops.incidents.detection.correlation-window`, default `PT30M`); deterministic
+  failure-signature normalization (source = failure signature else event type; trim, lowercase
+  ROOT, collapse whitespace, strip one trailing period, trim, bound 200; blank → poison);
+  active states OPEN/ACKNOWLEDGED/INVESTIGATING/MITIGATED (RESOLVED/CLOSED create a new incident);
+  newest-wins (`ORDER BY created_at DESC, id DESC LIMIT 1`); detected incident OPEN, version 0,
+  unassigned, severity from the event defaulting to **MINOR**, title `"<service>/<environment>:
+  <event_type>"`; SYSTEM audit with `actor_id` NULL (`INCIDENT_CREATED` / `INCIDENT_EVENT_CORRELATED`).
+- **Concurrency safeguard = PostgreSQL partial unique index** `uq_incidents_active_correlation`
+  on `(service_id, environment_id, failure_signature)` over the active states, plus
+  retry-on-conflict: the losing concurrent create surfaces a data-integrity violation and is
+  retried by the consumer's bounded retry (each `process()` opens a fresh transaction), after
+  which it correlates to the winner. No Redis, no JVM lock, no sleep.
+
+**Consequences.**
+- (+) Detection is atomic with event processing and PostgreSQL-authoritative; a rollback leaves
+  the event RECEIVED with no partial incident/audit.
+- (+) At most one active incident per correlation key is enforced by the database, not by
+  application coordination; the safeguard is correct under true concurrency.
+- (+) Deterministic, explainable, reproducible correlation (no ML), consistent with ADR-0017.
+- (−) A window-miss while a prior same-key incident is still active would collide on the index;
+  in practice a stale incident is resolved, and RESOLVED/CLOSED incidents free the key. This is
+  an accepted, documented consequence of "at most one active incident per key".
+- The `events → incidents.application` dependency is authoritative→authoritative and allowed by
+  the module-boundary rules (no cycle; incidents does not depend on events).
